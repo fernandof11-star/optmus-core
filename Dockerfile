@@ -47,9 +47,9 @@ ENV OPTMUS_DATA_DIR=/data \
     OPTMUS_HTTP_PORT=8420 \
     OPTMUS_ENV=prod \
     OPTMUS_VOICE_ENABLED=false
-VOLUME ["/data"]
+# VOLUME ["/app/data"]
 
-EXPOSE 8420
+EXPOSE 8420S
 
 # Liveness usa a unica rota publica - o healthcheck nao deve carregar credencial.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
