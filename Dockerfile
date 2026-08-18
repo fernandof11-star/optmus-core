@@ -76,6 +76,12 @@ sys.exit(0 if urllib.request.urlopen(url, timeout=4).status == 200 else 1)"
 
 # Shell form de proposito: precisa expandir $PORT, que a plataforma injeta.
 #
+# `python -m uvicorn`, nao `uvicorn`. As duas formas rodam o mesmo codigo, mas
+# a primeira depende so do interpretador estar no PATH, e a segunda depende do
+# diretorio de console scripts estar no PATH do shell que a plataforma usa para
+# executar o start command. Custou um deploy: "/bin/bash: line 1: uvicorn:
+# command not found" com o pacote instalado normalmente na imagem.
+#
 # SEM --log-config=/dev/null. Parecia inofensivo - "nao instale sua config de
 # log" - mas o uvicorn manda o caminho para logging.config.fileConfig, que faz
 # os.path.getsize e levanta RuntimeError("... is an empty file") para qualquer
@@ -83,4 +89,4 @@ sys.exit(0 if urllib.request.urlopen(url, timeout=4).status == 200 else 1)"
 # processo morria no start, no container tanto quanto aqui. Omitir deixa o
 # uvicorn com a config padrao dele, que nao conflita com o structlog: o
 # configure_logging() do lifespan e quem manda no log da aplicacao.
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8420}
+CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8420}

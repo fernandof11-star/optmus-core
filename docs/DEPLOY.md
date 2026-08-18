@@ -189,3 +189,58 @@ passando a ser um processo separado do orquestrador. É uma fase própria — n�
 tente contornar isso rodando dois Cores completos, um em cada lado: eles teriam
 duas memórias divergentes, e escolher qual está certa é o problema que a spec
 manda evitar.
+
+## Armadilhas de deploy que já custaram um dia
+
+Três defeitos diferentes produziram a mesma tela — "o Core não sobe" — por
+causas que não se parecem entre si. Ficam registrados com o sintoma exato,
+porque é pelo sintoma que a gente volta aqui.
+
+### `ModuleNotFoundError: No module named 'integrations'`
+
+O `Dockerfile` não copiava `integrations/` nem `reports/`, e o `pyproject` não
+os listava em `[tool.hatch.build.targets.wheel] packages`. **Não aparece em
+teste local**: o venv de desenvolvimento está em modo editável, então o import
+resolve de volta para o código-fonte e o container é o único lugar onde falta.
+
+Para reproduzir sem Docker, isole a raiz do repositório do `sys.path` — só o
+`site-packages` do venv fica:
+
+```python
+raiz = "C:/.../optmus-core"
+sys.path = [p for p in sys.path if p.replace("\\", "/").rstrip("/") != raiz]
+```
+
+Cuidado: filtrar por "contém optmus-core" apaga o `site-packages` junto, porque
+ele mora em `<repo>/.venv/Lib/site-packages`. Só a raiz exata sai.
+
+### `RuntimeError: /dev/null is an empty file`
+
+Vinha de `--log-config=/dev/null` no start command. O uvicorn passa o caminho
+para `logging.config.fileConfig`, que faz `os.path.getsize` e recusa arquivo de
+tamanho zero. **`/dev/null` tem tamanho zero no Linux também** — não é
+peculiaridade do Windows. Quem manda no log da aplicação é o
+`configure_logging()` do lifespan; o uvicorn pode ficar com a config dele.
+
+### `/bin/bash: line 1: uvicorn: command not found`
+
+O `CMD` chamava `uvicorn` direto. As duas formas rodam o mesmo código, mas
+`uvicorn` depende do diretório de console scripts estar no PATH do shell que a
+plataforma usa; `python -m uvicorn` depende só do interpretador. Use sempre a
+segunda.
+
+Se o erro persistir com `python -m uvicorn`, o problema não é o comando: é que
+a plataforma **não está usando o Dockerfile**. Confirme no log de build —
+build por Dockerfile mostra `load build definition from Dockerfile`; Nixpacks
+mostra `setup │ python312`.
+
+### O start command mora no Dockerfile, e só nele
+
+`railway.json` **não** declara `startCommand` de propósito. Ele já esteve nos
+dois lugares, e foi assim que um ficou com `--port $PORT` e o outro com
+`--port 8000` fixo — que é apostar na porta que a plataforma injeta.
+
+Vale lembrar que **a configuração do painel tem precedência sobre o
+`railway.json`**. Se o painel tiver um Start Command digitado ou o Builder em
+Nixpacks, o arquivo é ignorado em silêncio. Os dois campos precisam estar
+vazios/em Dockerfile para este repositório mandar no próprio deploy.
