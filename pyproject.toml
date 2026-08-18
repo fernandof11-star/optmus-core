@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "optmus-core"
+version = "0.1.0"
+description = "Optmus Core - assistente ambiente: voz, memoria, dispositivos, HUD."
+readme = "README.md"
+# NOTA: as fases F1+ (faster-whisper, openwakeword, mediapipe) so tem wheels
+# ate Python 3.12. O piso 3.11 vale para a F0; use 3.12 para o projeto inteiro.
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Montlux" }]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "sqlite-vec>=0.1.6",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Cerebro. Leve, sem binario nativo.
+llm = ["anthropic>=0.69"]
+# Embeddings semanticos locais (ONNX, CPU). Sem isto a memoria e lexical.
+memoria = ["fastembed>=0.4"]
+# Hardware de audio e modelos locais. Pesado e sensivel a versao de Python:
+# faster-whisper, openwakeword e mediapipe param no 3.12.
+voz = [
+    "anthropic>=0.69",
+    "sounddevice>=0.5",
+    "numpy>=1.26",
+    "faster-whisper>=1.1",
+    "openwakeword>=0.6",
+    "webrtcvad-wheels>=2.0.14",
+]
+# PDF do relatorio mensal. Puro Python, sem binario de sistema - weasyprint
+# exigiria GTK no Windows e no container.
+relatorios = ["reportlab>=4.2"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "reportlab>=4.2",
+    "pypdf>=5.0",
+]
+
+[project.scripts]
+optmus = "main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "memory", "perception", "expression", "tools", "security"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:optmus.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE", "ASYNC", "T20", "RUF", "PLR1704", "PLW2901"]
+# PLR1704 (alvo de for/with com nome de parametro) e PLW2901 (variavel de loop
+# sobrescrita) cobrem vizinhos do bug do ?dias, mas NAO ele: la a atribuicao era
+# direta dentro do laco, e nenhuma regra do ruff pega isso. O guarda para esse
+# caso e o teste tests/test_estilo.py, verificado por injecao do bug.
+# ASYNC109: `timeout=` e API deliberada em bus.drain e helpers de teste.
+ignore = ["ASYNC109"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]

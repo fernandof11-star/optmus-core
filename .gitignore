@@ -1,0 +1,55 @@
+# --- segredos: NUNCA versionar ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+tokens/
+
+# --- dados locais ---
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- logs ---
+*.log
+logs/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- modelos e artefatos pesados ---
+models/
+*.onnx
+*.tflite
+*.bin
+*.gguf
+audio_samples/
+
+# --- HUD (node) ---
+node_modules/
+hud/dist/
+hud/.vite/
+
+# --- SO / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

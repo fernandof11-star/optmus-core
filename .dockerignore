@@ -1,0 +1,46 @@
+# Segredos NUNCA entram na imagem: variaveis vem da plataforma, em runtime.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+tokens/
+
+# Dados locais - a nuvem tem o proprio volume
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+logs/
+
+# Ambiente e caches locais
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Modelos pesados: a imagem da nuvem nao faz STT nem wake word
+models/
+*.onnx
+*.tflite
+*.gguf
+audio_samples/
+
+# Nao entram no runtime
+tests/
+docs/
+hud/
+.git/
+.github/
+.claude/
+.idea/
+.vscode/
+Dockerfile
+.dockerignore

@@ -1,0 +1,1 @@
+"""Implementacoes concretas das ferramentas."""
