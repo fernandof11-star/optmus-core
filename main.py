@@ -20,34 +20,34 @@ from typing import Annotated, Any, Final
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from core import __version__
-from core.agent import Agent
-from core.bus import Event, EventBus, InProcessEventBus, Recorder
-from core.config import ConfigError, MissingConfigError, Settings, get_settings, runtime_notes
-from core.llm import LLMClient, NullLLMClient, escolher_cliente
-from core.logging import configure_logging, get_logger
-from core.metrics import LatencyTracker
-from core.router import IntentRouter
-from core.voice_loop import TurnOutcome, VoiceLoop
-from expression.tts import criar_sintetizador
+# from core import __version__
+# from core.agent import Agent
+# from core.bus import Event, EventBus, InProcessEventBus, Recorder
+# from core.config import ConfigError, MissingConfigError, Settings, get_settings, runtime_notes
+# from core.llm import LLMClient, NullLLMClient, escolher_cliente
+# from core.logging import configure_logging, get_logger
+# from core.metrics import LatencyTracker
+# from core.router import IntentRouter
+# from core.voice_loop import TurnOutcome, VoiceLoop
+# from expression.tts import criar_sintetizador
 # from integrations import notion_map
 # from integrations.notion import NotionClient, NotionError
 # from integrations.notion_stats import MapaIncompleto, NotionStats, diagnosticar_alertas
 # from integrations.reconciliacao import conferir
-from memory.consolidator import Consolidator, ConsolidatorScheduler
-from memory.store import Store
-from memory.system import MemorySystem
-from perception.audio import AudioIndisponivel, MicrophoneStream
-from perception.stt import STTIndisponivel, Transcriber
-from perception.wake import criar_detector
-from reports.mensal import ReportlabAusente, gerar_pdf, montar_dados
-from security.api_auth import TokenAuthMiddleware, verificar_exposicao
-from security.audit import AuditLog
-from security.policy import PolicyEngine
-from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
-from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
-from tools.impl.system import SistemaStatusTool
-from tools.registry import ToolRegistry
+# from memory.consolidator import Consolidator, ConsolidatorScheduler
+# from memory.store import Store
+# from memory.system import MemorySystem
+# from perception.audio import AudioIndisponivel, MicrophoneStream
+# from perception.stt import STTIndisponivel, Transcriber
+# from perception.wake import criar_detector
+# from reports.mensal import ReportlabAusente, gerar_pdf, montar_dados
+# from security.api_auth import TokenAuthMiddleware, verificar_exposicao
+# from security.audit import AuditLog
+# from security.policy import PolicyEngine
+# from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
+# from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
+# from tools.impl.system import SistemaStatusTool
+# from tools.registry import ToolRegistry
 
 log = get_logger("main")
 
