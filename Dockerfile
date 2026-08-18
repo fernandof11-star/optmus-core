@@ -49,7 +49,7 @@ ENV OPTMUS_DATA_DIR=/data \
     OPTMUS_VOICE_ENABLED=false
 # VOLUME ["/app/data"]
 
-EXPOSE 8420S
+EXPOSE 8000
 
 # Liveness usa a unica rota publica - o healthcheck nao deve carregar credencial.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
