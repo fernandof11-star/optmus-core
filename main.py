@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 # from tools.impl.system import SistemaStatusTool
 # from tools.registry import ToolRegistry
 
-log = get_logger("main")
+# log = get_logger("main")
 
 INICIO = datetime.now(UTC)
 
