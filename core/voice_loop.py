@@ -123,9 +123,21 @@ class VoiceLoop:
 
     # ------------------------------------------------------------- texto
     async def handle_text(
-        self, texto: str, *, source: str = "api", turn_id: str | None = None
+        self,
+        texto: str,
+        *,
+        source: str = "api",
+        turn_id: str | None = None,
+        falar: bool = True,
     ) -> TurnOutcome:
-        """Processa uma fala ja transcrita. Caminho comum de voz, HUD e API."""
+        """Processa uma fala ja transcrita. Caminho comum de voz, HUD e API.
+
+        ``falar=False`` para cliente que sintetiza do proprio lado - o
+        navegador, por exemplo. Sem isso o Core fala em voz alta na MAQUINA
+        ONDE ELE RODA quando alguem manda mensagem pelo site, e ainda cobra a
+        espera: medido em 3,8 s de TTS num turno cuja resposta ja estava
+        pronta em 2 ms.
+        """
         turn_id = turn_id or uuid.uuid4().hex[:12]
         turno = self._turno or TurnMetrics(turn_id)
         self._turno = turno
@@ -145,7 +157,7 @@ class VoiceLoop:
                 TurnOutcome(turn_id, texto, rota.resposta or "", rota.camada,
                             acao=rota.acao, regra=rota.regra),
                 turno,
-                falar=True,
+                falar=falar,
             )
 
         if rota.acao is Acao.SILENCIAR:
@@ -161,13 +173,13 @@ class VoiceLoop:
             return await self._finalizar(
                 TurnOutcome(turn_id, texto, rota.resposta or "", rota.camada, regra=rota.regra),
                 turno,
-                falar=True,
+                falar=falar,
             )
 
-        return await self._rodar_agente(texto, turn_id, turno)
+        return await self._rodar_agente(texto, turn_id, turno, falar=falar)
 
     async def _rodar_agente(
-        self, texto: str, turn_id: str, turno: TurnMetrics
+        self, texto: str, turn_id: str, turno: TurnMetrics, *, falar: bool = True
     ) -> TurnOutcome:
         self._synth.resume()
 
@@ -186,25 +198,34 @@ class VoiceLoop:
             while (pedaco := await fila.get()) is not None:
                 yield pedaco
 
-        falante = asyncio.create_task(self._synth.speak_stream(deltas()), name=f"tts-{turn_id}")
-        self._falando = falante
+        # Sem sintetizador quando quem pediu fala do proprio lado. Nao basta
+        # descartar o audio no fim: a tarefa de TTS consome a fila em tempo de
+        # fala, e o turno so termina quando ela termina.
+        falante: asyncio.Task[str] | None = None
+        if falar:
+            falante = asyncio.create_task(
+                self._synth.speak_stream(deltas()), name=f"tts-{turn_id}"
+            )
+            self._falando = falante
 
         with turno.stage("llm"):
             resultado = await self._agent.run(
                 texto,
                 history=historico,
                 context=contexto,
-                on_text=fila.put,
+                # on_text so faz sentido com alguem consumindo a fila.
+                on_text=fila.put if falar else None,
                 correlation_id=turn_id,
             )
 
         await fila.put(None)
-        with turno.stage("tts_restante"):
-            try:
-                await falante
-            except asyncio.CancelledError:
-                log.info("voz.fala_interrompida", turn_id=turn_id)
-        self._falando = None
+        if falante is not None:
+            with turno.stage("tts_restante"):
+                try:
+                    await falante
+                except asyncio.CancelledError:
+                    log.info("voz.fala_interrompida", turn_id=turn_id)
+            self._falando = None
 
         if self._memory is not None:
             with turno.stage("memoria_gravacao"):
@@ -217,10 +238,11 @@ class VoiceLoop:
                 resposta=resultado.text,
                 camada=Camada.LLM,
                 rodadas=resultado.rounds,
-                falado=True,
+                falado=falar,
                 erro=resultado.erro,
             ),
             turno,
+            # Ja falamos em streaming acima; _finalizar nao repete.
             falar=False,
         )
 

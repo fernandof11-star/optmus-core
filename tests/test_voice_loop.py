@@ -255,3 +255,41 @@ def test_backend_do_vad_e_escolha_explicita(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("OPTMUS_VAD_BACKEND", "energia")
     reset_settings_cache()
     assert VoiceActivityDetector(get_settings()).modo == "energia"
+
+
+async def test_falar_false_nao_sintetiza_no_servidor(montar, motor: FakeTTSEngine) -> None:
+    """Caminho do navegador: o Core responde, quem fala e o cliente.
+
+    Sem isto, uma mensagem digitada no site faz a MAQUINA ONDE O CORE RODA
+    falar em voz alta - e o turno so termina quando o audio termina. Medido em
+    producao local: 3,8 s de TTS numa resposta pronta em 2 ms.
+    """
+    voz = montar([LLMTurn(text="Tres mil e duzentos esse mes.", stop_reason="end_turn")])
+    resultado = await voz.handle_text("quanto gastei esse mes", falar=False)
+
+    assert resultado.resposta == "Tres mil e duzentos esse mes.", "a resposta continua vindo"
+    assert resultado.falado is False
+    assert motor.falas == [], "nenhum audio sintetizado no servidor"
+    assert "tts_restante" not in resultado.latencia.get("etapas", {}), (
+        "sem sintese, o turno nao paga espera de audio"
+    )
+
+
+async def test_falar_false_tambem_vale_na_camada_deterministica(
+    montar, motor: FakeTTSEngine
+) -> None:
+    """A camada 1 responde sem LLM - e tinha falar=True fixo no codigo."""
+    voz = montar()
+    resultado = await voz.handle_text("que horas sao", falar=False)
+
+    assert resultado.resposta, "a hora continua sendo respondida"
+    assert motor.falas == []
+
+
+async def test_falar_padrao_continua_sintetizando(montar, motor: FakeTTSEngine) -> None:
+    """O caminho de voz nao pode ter sido quebrado pelo parametro novo."""
+    voz = montar([LLMTurn(text="Pronto.", stop_reason="end_turn")])
+    resultado = await voz.handle_text("faz uma coisa dificil")
+
+    assert resultado.falado is True
+    assert motor.falas == ["Pronto."]

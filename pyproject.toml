@@ -54,7 +54,21 @@ dev = [
 optmus = "main:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "memory", "perception", "expression", "tools", "security"]
+# integrations e reports FAZEM PARTE do pacote. Ficaram de fora nesta lista e
+# no COPY do Dockerfile, e o container subia sem eles - todo "from integrations
+# ..." do main.py virava ModuleNotFoundError. Provado isolando o sys.path da
+# raiz do repo: com o venv em modo editavel, o import resolvia de volta para o
+# codigo-fonte e a falha nao aparecia em teste local nenhum.
+packages = [
+    "core",
+    "memory",
+    "perception",
+    "expression",
+    "tools",
+    "security",
+    "integrations",
+    "reports",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -74,6 +88,13 @@ select = ["E", "F", "I", "UP", "B", "BLE", "ASYNC", "T20", "RUF", "PLR1704", "PL
 # caso e o teste tests/test_estilo.py, verificado por injecao do bug.
 # ASYNC109: `timeout=` e API deliberada em bus.drain e helpers de teste.
 ignore = ["ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+# Script de operacao rodado a mao, fora do processo. print() e a interface dele
+# e a excecao ampla e proposital: qualquer falha vira mensagem e exit 1. As
+# regras T20/BLE existem para o codigo da aplicacao, onde log estruturado e
+# tratamento especifico sao obrigatorios - nao para isto.
+"validate_sync.py" = ["T20", "BLE001", "E501"]
 
 [tool.mypy]
 python_version = "3.11"

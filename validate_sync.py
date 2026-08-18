@@ -1,6 +1,7 @@
-﻿import requests
-import sys
+﻿import sys
 from datetime import datetime
+
+import requests
 
 WEB_URL = "https://jarvis-pessoal-nine.vercel.app"
 CORE_STAGING = "https://optmus-staging.up.railway.app"
