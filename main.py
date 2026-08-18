@@ -31,9 +31,9 @@ from core.router import IntentRouter
 from core.voice_loop import TurnOutcome, VoiceLoop
 from expression.tts import criar_sintetizador
 # from integrations import notion_map
-from integrations.notion import NotionClient, NotionError
-from integrations.notion_stats import MapaIncompleto, NotionStats, diagnosticar_alertas
-from integrations.reconciliacao import conferir
+# from integrations.notion import NotionClient, NotionError
+# from integrations.notion_stats import MapaIncompleto, NotionStats, diagnosticar_alertas
+# from integrations.reconciliacao import conferir
 from memory.consolidator import Consolidator, ConsolidatorScheduler
 from memory.store import Store
 from memory.system import MemorySystem
