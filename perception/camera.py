@@ -49,9 +49,32 @@ from core.logging import get_logger
 
 log = get_logger("perception.camera")
 
-# Quantos quadros jogar fora antes do que vale. Cinco cobre a convergencia de
-# exposicao das webcams comuns sem passar de ~150 ms no total.
+# Aquecimento ADAPTATIVO: descarta quadros ate a exposicao parar de mudar.
+#
+# Antes isto era um numero fixo (5), e o numero estava errado do jeito mais
+# traicoeiro possivel. Medido apontando a camera para uma tela clara num quarto
+# escuro:
+#
+#     quadro    brilho   pixels saturados
+#          0     180,6            57,1%
+#          5     227,4            80,3%   <- onde o codigo capturava
+#         10     182,4            32,3%
+#         20     140,9             2,1%
+#         39      99,7             0,0%   <- texto legivel
+#
+# O quadro 5 nao era so insuficiente: ficava perto do PICO da superexposicao. A
+# foto saia um retangulo branco, e o modelo - corretamente - dizia que nao dava
+# para ler. Num quarto escuro e uniforme a exposicao ja nasce estavel e o laco
+# sai em poucos quadros; e diante de algo claro que ele ganha o tempo que
+# precisa. Numero fixo nao cobre os dois casos.
 QUADROS_DE_AQUECIMENTO = 5
+QUADROS_MAXIMOS = 45
+# Variacao de brilho entre quadros abaixo da qual consideramos estavel.
+ESTABILIDADE = 0.015
+QUADROS_ESTAVEIS = 3
+# Teto de tempo: cena que pisca (monitor, lampada) nunca estabiliza, e esperar
+# para sempre seria pior que uma foto imperfeita.
+TEMPO_MAXIMO_MS = 3000.0
 
 # Qualidade do JPEG. 85 e o ponto onde artefato de compressao ainda nao atrapalha
 # leitura de texto pequeno, e o upload nao dobra de tamanho a toa.
@@ -197,15 +220,8 @@ class CameraCapture:
         device.set(cv2.CAP_PROP_FRAME_WIDTH, largura)
         device.set(cv2.CAP_PROP_FRAME_HEIGHT, altura)
 
-        descartados = 0
-        for _ in range(QUADROS_DE_AQUECIMENTO):
-            ok, _quadro = device.read()
-            if not ok:
-                break
-            descartados += 1
-
-        ok, quadro = device.read()
-        if not ok or quadro is None:
+        descartados, convergiu, quadro = self._aquecer(device)
+        if quadro is None:
             raise CameraIndisponivelError(
                 f"camera {self._indice} abriu mas nao entregou quadro"
             )
@@ -222,7 +238,55 @@ class CameraCapture:
             "resolucao_entregue": entregue,
             "redimensionado": entregue != (nativa_w, nativa_h),
             "quadros_descartados": descartados,
+            # Falso significa "a foto pode estar clara ou escura demais". Quem
+            # le texto precisa saber disso: e a diferenca entre "nao ha texto"
+            # e "havia texto e a foto estourou".
+            "exposicao_convergiu": convergiu,
         }
+
+    def _aquecer(self, device: Any) -> tuple[int, bool, Any]:
+        """Le quadros ate a exposicao estabilizar. Devolve (descartados, convergiu, quadro).
+
+        O ultimo quadro lido e o que vale - nao ha leitura extra depois do
+        laco. Ler mais um so gastaria tempo e devolveria a mesma cena.
+        """
+        anterior: float | None = None
+        estaveis = 0
+        quadro = None
+        lidos = 0
+        limite = time.perf_counter() + TEMPO_MAXIMO_MS / 1000
+
+        for i in range(QUADROS_MAXIMOS):
+            ok, novo = device.read()
+            if not ok or novo is None:
+                break
+            quadro, lidos = novo, i + 1
+
+            brilho = float(novo.mean())
+            if anterior is not None:
+                variacao = abs(brilho - anterior) / max(anterior, 1.0)
+                estaveis = estaveis + 1 if variacao < ESTABILIDADE else 0
+            anterior = brilho
+
+            if i + 1 >= QUADROS_DE_AQUECIMENTO and estaveis >= QUADROS_ESTAVEIS:
+                return max(lidos - 1, 0), True, quadro
+            if time.perf_counter() > limite:
+                log.warning(
+                    "camera.exposicao_nao_estabilizou",
+                    quadros=lidos,
+                    motivo="tempo maximo",
+                    impacto="a foto pode sair clara ou escura demais",
+                )
+                return max(lidos - 1, 0), False, quadro
+
+        if quadro is not None and estaveis < QUADROS_ESTAVEIS:
+            log.warning(
+                "camera.exposicao_nao_estabilizou",
+                quadros=lidos,
+                motivo="teto de quadros",
+                impacto="a foto pode sair clara ou escura demais",
+            )
+        return max(lidos - 1, 0), estaveis >= QUADROS_ESTAVEIS, quadro
 
     def _ajustar(
         self, cv2: Any, quadro: Any, nativa: tuple[int, int]

@@ -14,16 +14,21 @@ import pytest
 
 from perception.camera import (
     QUADROS_DE_AQUECIMENTO,
+    QUADROS_MAXIMOS,
     CameraCapture,
     CameraIndisponivelError,
 )
 
 
 class QuadroFalso:
-    """So o que o codigo le de um quadro do OpenCV: ``shape``."""
+    """O que o codigo le de um quadro do OpenCV: ``shape`` e ``mean()``."""
 
-    def __init__(self, largura: int, altura: int) -> None:
+    def __init__(self, largura: int, altura: int, brilho: float = 100.0) -> None:
         self.shape = (altura, largura, 3)
+        self._brilho = brilho
+
+    def mean(self) -> float:
+        return self._brilho
 
 
 class DeviceFalso:
@@ -33,8 +38,11 @@ class DeviceFalso:
         nativa: tuple[int, int] = (1920, 1080),
         abre: bool = True,
         leituras_ok: int | None = None,
+        brilhos: list[float] | None = None,
     ) -> None:
         self.nativa = nativa
+        # Curva de exposicao. None = cena ja estavel desde o primeiro quadro.
+        self._brilhos = brilhos
         self._abre = abre
         # None = sempre entrega. Numero = entrega N vezes e depois falha.
         self._leituras_ok = leituras_ok
@@ -53,8 +61,13 @@ class DeviceFalso:
         if self._leituras_ok is not None and self.leituras >= self._leituras_ok:
             self.leituras += 1
             return False, None
+        indice = self.leituras
         self.leituras += 1
-        return True, QuadroFalso(*self.nativa)
+        if self._brilhos:
+            brilho = self._brilhos[min(indice, len(self._brilhos) - 1)]
+        else:
+            brilho = 100.0
+        return True, QuadroFalso(*self.nativa, brilho=brilho)
 
     def release(self) -> None:
         self.liberado += 1
@@ -122,6 +135,7 @@ async def test_captura_devolve_jpeg_e_metadados_completos() -> None:
         "resolucao_entregue",
         "redimensionado",
         "quadros_descartados",
+        "exposicao_convergiu",
         "latencia_captura_ms",
         "timestamp",
     }
@@ -189,16 +203,46 @@ async def test_proporcao_e_preservada_ao_encolher() -> None:
 
 
 # ------------------------------------------------------------- aquecimento
-async def test_primeiros_quadros_sao_descartados() -> None:
-    """O primeiro quadro sai preto ou esverdeado, e o modelo o descreveria."""
+async def test_cena_estavel_sai_no_piso_de_aquecimento() -> None:
+    """Quarto escuro e uniforme: a exposicao ja nasce boa, nao ha o que esperar."""
     device = DeviceFalso()
     camera, _ = _camera(device)
 
     async with camera:
         _, meta = await camera.capturar()
 
-    assert meta["quadros_descartados"] == QUADROS_DE_AQUECIMENTO
-    assert device.leituras == QUADROS_DE_AQUECIMENTO + 1, "descartados + o que vale"
+    assert meta["exposicao_convergiu"] is True
+    assert device.leituras == QUADROS_DE_AQUECIMENTO, "nao le alem do necessario"
+    assert meta["quadros_descartados"] == QUADROS_DE_AQUECIMENTO - 1
+
+
+async def test_exposicao_instavel_faz_esperar() -> None:
+    """MEDIDO numa tela clara em quarto escuro: brilho 180 -> 227 -> 182 -> 140
+    -> 99, com 80% dos pixels saturados no quadro 5. Um aquecimento fixo de 5
+    capturava perto do PICO da superexposicao e devolvia um retangulo branco."""
+    curva = [180.0, 200.0, 227.0, 210.0, 182.0, 160.0, 140.0, 120.0, 105.0]
+    curva += [100.0] * 10  # estabilizou
+    device = DeviceFalso(brilhos=curva)
+    camera, _ = _camera(device)
+
+    async with camera:
+        _, meta = await camera.capturar()
+
+    assert meta["exposicao_convergiu"] is True
+    assert device.leituras > QUADROS_DE_AQUECIMENTO, "esperou a exposicao assentar"
+    assert meta["quadros_descartados"] >= 9, "descartou toda a parte instavel"
+
+
+async def test_cena_que_nunca_estabiliza_respeita_o_teto() -> None:
+    """Monitor piscando nunca assenta. Foto imperfeita e melhor que travar."""
+    device = DeviceFalso(brilhos=[100.0 if i % 2 else 200.0 for i in range(80)])
+    camera, _ = _camera(device)
+
+    async with camera:
+        _, meta = await camera.capturar()
+
+    assert meta["exposicao_convergiu"] is False, "avisa que a foto pode estar ruim"
+    assert device.leituras <= QUADROS_MAXIMOS, "nao le para sempre"
 
 
 # ---------------------------------------------------- devolucao do device
