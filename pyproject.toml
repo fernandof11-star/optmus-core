@@ -41,6 +41,9 @@ voz = [
 # PDF do relatorio mensal. Puro Python, sem binario de sistema - weasyprint
 # exigiria GTK no Windows e no container.
 relatorios = ["reportlab>=4.2"]
+# Camera. NAO entra na imagem do container: la nao existe webcam, e seriam
+# 40 MB de wheel para uma capacidade que so faz sentido na maquina local.
+visao = ["opencv-python>=4.10"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
