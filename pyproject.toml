@@ -95,6 +95,8 @@ ignore = ["ASYNC109"]
 # regras T20/BLE existem para o codigo da aplicacao, onde log estruturado e
 # tratamento especifico sao obrigatorios - nao para isto.
 "validate_sync.py" = ["T20", "BLE001", "E501"]
+# Mesma natureza: rodado a mao contra um Core no ar, print() e a interface.
+"scripts/*.py" = ["T20", "BLE001", "E501"]
 
 [tool.mypy]
 python_version = "3.11"

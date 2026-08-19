@@ -117,3 +117,81 @@ def test_porta_aceita_a_variavel_PORT(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PORT", "9123")
     reset_settings_cache()
     assert get_settings().http_port == 9123
+
+
+# ------------------------------------------- o buraco de 2026-08-18 (producao)
+def _ambiente_de_producao(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reproduz o que a Railway entregava: PORT injetado e mais nada.
+
+    Nem OPTMUS_ENV nem OPTMUS_HTTP_HOST chegavam ao processo - estavam no
+    Dockerfile, e o builder em uso nao lia o Dockerfile. Sobravam os padroes:
+    env=dev e http_host=127.0.0.1.
+    """
+    for chave in ("OPTMUS_API_TOKEN", "OPTMUS_ENV", "OPTMUS_HTTP_HOST"):
+        monkeypatch.delenv(chave, raising=False)
+    monkeypatch.setenv("PORT", "8080")
+    reset_settings_cache()
+
+
+def test_plataforma_sem_token_recusa_subir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """O Core ficou publico e sem autenticacao por causa deste caminho.
+
+    Com PORT injetado, o processo esta hospedado - o uvicorn e iniciado com
+    --host 0.0.0.0 pela plataforma, independentemente do que a config acredita.
+    Antes, http_host=127.0.0.1 e env=dev faziam o guarda liberar a subida, e o
+    middleware se desativava sozinho por nao ter token: API aberta na internet.
+    """
+    _ambiente_de_producao(monkeypatch)
+    settings = get_settings()
+
+    assert settings.env.value == "dev", "reproduz o estado real: ninguem setou OPTMUS_ENV"
+    assert settings.http_host == "127.0.0.1", "e a config acreditava ser local"
+
+    with pytest.raises(ConfigError, match="OPTMUS_API_TOKEN"):
+        verificar_exposicao(settings)
+
+
+def test_plataforma_e_considerada_exposicao(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PORT injetado significa hospedado, mesmo com http_host local."""
+    _ambiente_de_producao(monkeypatch)
+    assert exposto_na_rede(get_settings()) is True
+
+
+def test_plataforma_com_token_sobe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A correcao nao pode impedir um deploy legitimo de subir."""
+    _ambiente_de_producao(monkeypatch)
+    monkeypatch.setenv("OPTMUS_API_TOKEN", TOKEN)
+    reset_settings_cache()
+    verificar_exposicao(get_settings())
+
+
+async def test_token_falso_e_negado_com_a_api_real(monkeypatch: pytest.MonkeyPatch) -> None:
+    """O teste manual que expos o problema, agora automatizado.
+
+    Foi com a string literal "SEU_OPTMUS_API_TOKEN_AQUI" - um placeholder de
+    documentacao - que /chat respondeu 200 em producao.
+    """
+    monkeypatch.setenv("OPTMUS_API_TOKEN", TOKEN)
+    reset_settings_cache()
+    settings = get_settings()
+
+    async with await _cliente(settings) as cliente:
+        resposta = await cliente.get(
+            "/memoria/buscar", headers={"Authorization": "Bearer SEU_OPTMUS_API_TOKEN_AQUI"}
+        )
+    assert resposta.status_code == 401
+
+
+def test_local_de_verdade_continua_sem_exigir_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A correcao falha fechada, mas nao pode atrapalhar o uso local.
+
+    Sem sinal de plataforma e em 127.0.0.1, o Core sobe sem token como sempre.
+    """
+    for chave in ("OPTMUS_API_TOKEN", "OPTMUS_ENV", "OPTMUS_HTTP_HOST"):
+        monkeypatch.delenv(chave, raising=False)
+    for marca in ("PORT", "RAILWAY_ENVIRONMENT", "RENDER", "DYNO"):
+        monkeypatch.delenv(marca, raising=False)
+    reset_settings_cache()
+
+    assert exposto_na_rede(get_settings()) is False
+    verificar_exposicao(get_settings())  # nao levanta
