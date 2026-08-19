@@ -15,6 +15,22 @@ e a consequencia que a politica precisa poder barrar.
 toca. Essa separacao e da F4.1 e existe exatamente para isto: sem ela, o
 primeiro descuido colocaria uma foto da sua sala em base64 num SQLite sem prazo
 de validade.
+
+Custo real de um turno com visao, medido de ponta a ponta com webcam e modelo
+de verdade (duas capturas, tres rodadas)::
+
+    rodada 1 (modelo decide chamar)   6864 ms
+    olhar modo=descrever              1986 ms
+    rodada 2 (modelo ve a imagem)     2354 ms
+    olhar modo=ler                    2491 ms
+    rodada 3 (modelo responde)        3154 ms
+    ------------------------------------------
+    TOTAL                            16851 ms
+
+**A camera nao e o gargalo**: sao 4,5 s dos 16,9 s, 27%. O resto e raciocinio
+do modelo, e a maior fatia unica e a rodada 1 - 6,9 s ANTES de a camera acender,
+so para decidir usar a ferramenta. Se um dia isto precisar ficar mais rapido, e
+ali que se mexe, nao na captura.
 """
 
 from __future__ import annotations
