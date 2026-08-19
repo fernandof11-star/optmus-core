@@ -144,6 +144,14 @@ class Settings(BaseSettings):
     piper_model_path: Path | None = None
     piper_binary: str = "piper"
 
+    # --------------------------------------------------------------- visao
+    # O opt-in de verdade e instalar o extra [visao]: sem OpenCV a ferramenta
+    # nem entra no schema do modelo. Esta flag e o interruptor para desligar a
+    # camera sem desinstalar nada - util quando a maquina esta em reuniao, ou
+    # emprestada.
+    vision_enabled: bool = True
+    camera_index: int = Field(default=0, ge=0, le=8)
+
     # ----------------------------------------------------------------- voz
     voice_enabled: bool = False
     audio_sample_rate: int = Field(default=16000, ge=8000, le=48000)

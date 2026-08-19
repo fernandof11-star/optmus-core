@@ -47,6 +47,7 @@ from security.policy import PolicyEngine
 from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
 from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
 from tools.impl.system import SistemaStatusTool
+from tools.impl.visao import OlharTool
 from tools.registry import ToolRegistry
 
 log = get_logger("main")
@@ -310,6 +311,10 @@ async def _montar_ferramentas(
     registro.register(
         SistemaStatusTool(settings, memory=memoria, tracker=tracker, degradacoes=degradacoes)
     )
+    # Sem caminho especial para visao: entra pelo mesmo registro, com a mesma
+    # politica de EXTERNO. O refresh() abaixo a remove do schema quando nao ha
+    # OpenCV - o que e sempre o caso no container, que nao tem camera.
+    registro.register(OlharTool(settings))
     await registro.refresh()
     log.info("ferramentas.montadas", quantidade=len(registro.schemas()))
     return registro
