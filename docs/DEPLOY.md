@@ -264,3 +264,29 @@ Esse erro só apareceu quando o Builder virou Dockerfile de verdade. Com
 Railpack/Nixpacks o arquivo nem era lido, então três defeitos diferentes
 estavam empilhados atrás do mesmo 502 — cada um só visível depois de corrigido
 o anterior.
+
+### `failed to calculate checksum: "/data/notion_map.json": not found`
+
+Havia um `COPY data/notion_map.json` no Dockerfile para um arquivo que o build
+nunca recebe: `data/` está no `.gitignore`, e corretamente — ali moram
+`optmus.db` e `perfil.md`.
+
+A tentação é commitar o arquivo e seguir. **Não faça.** Ele carrega os
+`database_id` das suas bases pessoais e **este repositório é público**. Não são
+credenciais (ler exige `OPTMUS_NOTION_TOKEN`), mas são identificadores estáveis
+de dado pessoal, e ficam no histórico do git para sempre.
+
+A causa de fundo era o mapa ser **configuração morando no diretório de
+estado**. Configuração que identifica recurso pessoal viaja como variável da
+plataforma ou arquivo no volume — nunca no repositório.
+
+Como o mapa chega em produção hoje:
+
+- **Local:** `data/notion_map.json`, gerado por `GET /notion/descobrir`.
+- **Railway:** coloque-o no volume montado em `/data`, ou aponte
+  `OPTMUS_NOTION_MAP_PATH` para onde ele estiver.
+- **Formato:** `config/notion_map.example.json`, versionado, com os ids
+  zerados.
+
+Sem o mapa, `/notion/*` e `/relatorios/*` respondem "mapa incompleto". É
+degradação explícita — o Core não sobe número errado por falta de configuração.

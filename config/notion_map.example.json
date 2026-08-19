@@ -1,0 +1,98 @@
+{
+  "financeiro": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "data": "Data",
+    "valor": "Valor",
+    "tipo": "Tipo",
+    "categoria": "Categoria",
+    "valores_receita": [
+      "Entrada"
+    ],
+    "valores_despesa": [
+      "SaÃ­da"
+    ]
+  },
+  "trabalho": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "tipo": "Tipo",
+    "status": "Status",
+    "valores_concluido": [
+      "Concluido",
+      "Done"
+    ]
+  },
+  "estudos": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "titulo": "TÃ­tulo",
+    "data": "Data",
+    "disciplina": "Disciplina",
+    "tipo": "Tipo",
+    "status": "Status",
+    "nota": "Nota"
+  },
+  "treino": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "data": "Data",
+    "status": "Status",
+    "duracao": "DuraÃ§Ã£o (min)",
+    "valores_realizado": [
+      "ConcluÃ­do"
+    ]
+  },
+  "notas_trimestre": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "disciplina": "Disciplina",
+    "trimestre": "Trimestre",
+    "pontos": "Pontos"
+  },
+  "tarefas": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "titulo": "Tarefa",
+    "status": "Status da tarefa",
+    "prioridade": "Prioridade",
+    "prazo": "Data de conclusÃ£o",
+    "valores_concluido": [
+      "ConcluÃ­do"
+    ]
+  },
+  "sono": {
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "noite": "Noite",
+    "horas": "Horas",
+    "qualidade": "Qualidade",
+    "meta_horas": 8.0
+  },
+  "notas": {
+    "total_ano": 100.0,
+    "minimo_aprovacao": 60.0,
+    "trimestres": [
+      {
+        "numero": 1,
+        "nome": "1Âº trimestre",
+        "total": 30,
+        "minimo": 18
+      },
+      {
+        "numero": 2,
+        "nome": "2Âº trimestre",
+        "total": 30,
+        "minimo": 18
+      },
+      {
+        "numero": 3,
+        "nome": "3Âº trimestre",
+        "total": 40,
+        "minimo": 24
+      }
+    ]
+  },
+  "prazos": [
+    {
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "titulo": "TÃ­tulo",
+      "data": "Data",
+      "detalhe": "Disciplina",
+      "rotulo": "estudo"
+    }
+  ]
+}

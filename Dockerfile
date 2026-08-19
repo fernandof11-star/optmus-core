@@ -39,11 +39,20 @@ COPY integrations/ ./integrations/
 COPY reports/ ./reports/
 COPY main.py ./
 
-# O mapa das bases do Notion e configuracao, nao dado gerado: sem ele todo
-# /notion/* responde "mapa incompleto". Fica na imagem, e nao em /data, porque
-# /data e volume - um COPY para la seria mascarado pela montagem no primeiro
-# deploy. O caminho e apontado por OPTMUS_NOTION_MAP_PATH mais abaixo.
-COPY data/notion_map.json ./config/notion_map.json
+# SEM copiar o mapa do Notion para a imagem.
+#
+# Tentei antes: `COPY data/notion_map.json`. Quebrou o build com "failed to
+# calculate checksum: /data/notion_map.json: not found", porque data/ esta no
+# .gitignore - e esta certo, ali moram optmus.db e perfil.md.
+#
+# Commitar o arquivo tambem nao serve: ele carrega os database_id das bases
+# pessoais e ESTE REPOSITORIO E PUBLICO. Nao sao credenciais (ler exige o
+# token), mas sao identificadores estaveis de dado pessoal.
+#
+# Entao o mapa chega pelo ambiente, nao pela imagem: deixe-o em /data (volume
+# da plataforma) ou aponte OPTMUS_NOTION_MAP_PATH. Sem ele, /notion/* e
+# /relatorios/* respondem "mapa incompleto" - degradacao explicita, nao numero
+# errado. Ver config/notion_map.example.json para o formato.
 
 # Usuario sem privilegio: se uma ferramenta for enganada a executar algo, que
 # seja com o menor poder possivel.
@@ -53,7 +62,6 @@ RUN useradd --create-home --uid 10001 optmus \
 USER optmus
 
 ENV OPTMUS_DATA_DIR=/data \
-    OPTMUS_NOTION_MAP_PATH=/app/config/notion_map.json \
     OPTMUS_HTTP_HOST=0.0.0.0 \
     OPTMUS_HTTP_PORT=8420 \
     OPTMUS_ENV=prod \
