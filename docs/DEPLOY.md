@@ -244,3 +244,23 @@ Vale lembrar que **a configuração do painel tem precedência sobre o
 `railway.json`**. Se o painel tiver um Start Command digitado ou o Builder em
 Nixpacks, o arquivo é ignorado em silêncio. Os dois campos precisam estar
 vazios/em Dockerfile para este repositório mandar no próprio deploy.
+
+### `dockerfile invalid: docker VOLUME at Line N is not supported`
+
+A Railway recusa o build inteiro se o Dockerfile tiver instrução `VOLUME`. Lá o
+disco persistente é recurso da plataforma (Settings → Volumes), montado por
+fora da imagem.
+
+O detalhe perigoso é o que some junto: a instrução `VOLUME` era a única coisa
+declarando que `/data` precisa ser persistente. Sem ela, **um container sem
+volume montado sobe igual, responde igual e apaga toda a memória a cada
+deploy**. A falha não aparece em nenhum healthcheck — aparece quando o Optmus
+esquece uma conversa de ontem.
+
+Confira depois de cada recriação de serviço: Settings → Volumes, mount path
+`/data`.
+
+Esse erro só apareceu quando o Builder virou Dockerfile de verdade. Com
+Railpack/Nixpacks o arquivo nem era lido, então três defeitos diferentes
+estavam empilhados atrás do mesmo 502 — cada um só visível depois de corrigido
+o anterior.

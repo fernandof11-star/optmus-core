@@ -52,8 +52,6 @@ RUN useradd --create-home --uid 10001 optmus \
     && chown -R optmus:optmus /app /data
 USER optmus
 
-# Volume persistente. SEM isto, o SQLite vive no layer efemero do container e
-# TODA a memoria do Optmus e apagada a cada deploy.
 ENV OPTMUS_DATA_DIR=/data \
     OPTMUS_NOTION_MAP_PATH=/app/config/notion_map.json \
     OPTMUS_HTTP_HOST=0.0.0.0 \
@@ -61,10 +59,19 @@ ENV OPTMUS_DATA_DIR=/data \
     OPTMUS_ENV=prod \
     OPTMUS_VOICE_ENABLED=false
 
-# Sem volume, o SQLite vive no layer efemero e TODA a memoria do Optmus e
-# apagada a cada deploy. Na Railway, monte um volume em /data pelo painel -
-# esta linha declara a intencao e vale para docker run local.
-VOLUME ["/data"]
+# SEM instrucao VOLUME aqui. A Railway recusa o build inteiro com
+# "dockerfile invalid: docker VOLUME at Line N is not supported, use Railway
+# Volumes" - la o disco persistente e recurso da plataforma, montado por fora.
+#
+# O efeito colateral e que /data so persiste se o volume estiver montado no
+# painel: Settings -> Volumes -> mount path /data. Sem isso o container sobe
+# igual, responde igual, e apaga TODA a memoria do Optmus a cada deploy - falha
+# silenciosa, que so aparece quando ele esquece uma conversa de ontem.
+#
+# Para rodar a imagem fora da Railway, monte na mao:
+#     docker run -v optmus-data:/data ...
+# (era o que a instrucao VOLUME dava de graca, e agora e responsabilidade
+# de quem executa.)
 
 EXPOSE 8420
 
