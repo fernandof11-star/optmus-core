@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     log_level: LogLevel = LogLevel.INFO
     log_json: bool | None = None
 
+    # Origens que podem chamar a API de dentro de um navegador. Lista explicita,
+    # nunca "*": o navegador so faz valer a regra de mesma origem se o servidor
+    # disser quem pode. O padrao cobre o `vite dev`; o dominio da Vercel entra
+    # por OPTMUS_CORS_ORIGINS no painel, na hora do deploy do frontend.
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://localhost:5174"]
+    )
+
     http_host: str = "127.0.0.1"
     # PORT sem prefixo porque Railway, Render e Fly injetam essa variavel.
     http_port: int = Field(

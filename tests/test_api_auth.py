@@ -195,3 +195,66 @@ def test_local_de_verdade_continua_sem_exigir_token(monkeypatch: pytest.MonkeyPa
 
     assert exposto_na_rede(get_settings()) is False
     verificar_exposicao(get_settings())  # nao levanta
+
+
+# ---------------------------------------------------------------- preflight
+async def test_preflight_do_navegador_nao_e_barrado_pelo_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O OPTIONS de preflight nao carrega credencial - por definicao.
+
+    Com o auth por fora do CORS, o preflight levava 401 sem nenhum header
+    Access-Control-*, e o navegador bloqueava a chamada real. A API respondia
+    perfeitamente no curl, que nao faz CORS, entao o sintoma so aparecia no
+    navegador: "Failed to fetch", sem nada nos logs do servidor.
+    """
+    from fastapi.middleware.cors import CORSMiddleware
+
+    monkeypatch.setenv("OPTMUS_API_TOKEN", TOKEN)
+    reset_settings_cache()
+    settings = get_settings()
+
+    app = _app(settings)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://core"
+    ) as cliente:
+        resposta = await cliente.options(
+            "/memoria/buscar",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert resposta.status_code == 200, "preflight nao pode ser barrado pelo auth"
+    assert resposta.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+async def test_origem_desconhecida_nao_recebe_liberacao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lista explicita, nunca "*": so quem esta na lista passa."""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    monkeypatch.setenv("OPTMUS_API_TOKEN", TOKEN)
+    reset_settings_cache()
+
+    app = _app(get_settings())
+    app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"])
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://core"
+    ) as cliente:
+        resposta = await cliente.get(
+            "/health/live", headers={"Origin": "https://site-qualquer.example"}
+        )
+
+    assert "access-control-allow-origin" not in resposta.headers

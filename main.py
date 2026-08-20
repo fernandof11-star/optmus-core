@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Final
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from core import __version__
@@ -386,6 +387,23 @@ app = FastAPI(
     openapi_url=None if _settings_inicial.env.value == "prod" else "/openapi.json",
 )
 app.add_middleware(TokenAuthMiddleware, settings=_settings_inicial)
+# CORS adicionado DEPOIS do auth, e por isso fica por FORA dele - o Starlette
+# aplica os middlewares na ordem inversa. A ordem e o ponto: o navegador manda
+# um OPTIONS de preflight ANTES do POST /chat, e preflight nao carrega
+# credencial por definicao. Com o auth por fora, o preflight levava 401 sem
+# nenhum header Access-Control-*, e o navegador bloqueava a chamada real - com
+# a API funcionando perfeitamente no curl, que nao faz CORS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_settings_inicial.cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    # False de proposito: o token vai no header Authorization, nao em cookie.
+    # Ligar isto sem necessidade permitiria que o navegador anexasse cookies de
+    # sessao em requisicao de outra origem.
+    allow_credentials=False,
+    max_age=600,
+)
 
 
 @app.get("/health/live", tags=["sistema"])
