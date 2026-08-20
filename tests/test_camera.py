@@ -20,12 +20,46 @@ from perception.camera import (
 )
 
 
-class QuadroFalso:
-    """O que o codigo le de um quadro do OpenCV: ``shape`` e ``mean()``."""
+class _Fracao:
+    """Resultado de ``amostra > 250``: so precisa saber responder mean()."""
 
-    def __init__(self, largura: int, altura: int, brilho: float = 100.0) -> None:
+    def __init__(self, valor: float) -> None:
+        self._valor = valor
+
+    def mean(self) -> float:
+        return self._valor
+
+
+class _Amostra:
+    """A fatia ``quadro[::4, ::4]`` que o _metricas() usa."""
+
+    def __init__(self, brilho: float, saturacao: float) -> None:
+        self._brilho = brilho
+        self._saturacao = saturacao
+
+    def mean(self) -> float:
+        return self._brilho
+
+    def __gt__(self, limiar: float) -> _Fracao:
+        return _Fracao(self._saturacao)
+
+
+class QuadroFalso:
+    """O que o codigo le de um quadro do OpenCV: shape, fatia e mean().
+
+    Nao usa numpy de proposito: a suite roda sem o extra [visao], e depender de
+    numpy aqui amarraria o teste da camera a uma dependencia que ele nao tem.
+    """
+
+    def __init__(
+        self, largura: int, altura: int, brilho: float = 100.0, saturacao: float = 0.0
+    ) -> None:
         self.shape = (altura, largura, 3)
         self._brilho = brilho
+        self._saturacao = saturacao
+
+    def __getitem__(self, _fatia: Any) -> _Amostra:
+        return _Amostra(self._brilho, self._saturacao)
 
     def mean(self) -> float:
         return self._brilho
@@ -39,10 +73,12 @@ class DeviceFalso:
         abre: bool = True,
         leituras_ok: int | None = None,
         brilhos: list[float] | None = None,
+        saturacoes: list[float] | None = None,
     ) -> None:
         self.nativa = nativa
-        # Curva de exposicao. None = cena ja estavel desde o primeiro quadro.
+        # Curvas de exposicao por quadro. None = cena ja assentada no primeiro.
         self._brilhos = brilhos
+        self._saturacoes = saturacoes
         self._abre = abre
         # None = sempre entrega. Numero = entrega N vezes e depois falha.
         self._leituras_ok = leituras_ok
@@ -63,11 +99,16 @@ class DeviceFalso:
             return False, None
         indice = self.leituras
         self.leituras += 1
-        if self._brilhos:
-            brilho = self._brilhos[min(indice, len(self._brilhos) - 1)]
-        else:
-            brilho = 100.0
-        return True, QuadroFalso(*self.nativa, brilho=brilho)
+        def _na_curva(curva: list[float] | None, padrao: float) -> float:
+            if not curva:
+                return padrao
+            return curva[min(indice, len(curva) - 1)]
+
+        return True, QuadroFalso(
+            *self.nativa,
+            brilho=_na_curva(self._brilhos, 100.0),
+            saturacao=_na_curva(self._saturacoes, 0.0),
+        )
 
     def release(self) -> None:
         self.liberado += 1
@@ -136,6 +177,7 @@ async def test_captura_devolve_jpeg_e_metadados_completos() -> None:
         "redimensionado",
         "quadros_descartados",
         "exposicao_convergiu",
+        "saturacao",
         "latencia_captura_ms",
         "timestamp",
     }
@@ -406,3 +448,58 @@ async def test_backend_preferido_que_nao_abre_cai_para_o_padrao(
     assert cv2.backends_tentados == [cv2.CAP_DSHOW, None], "tentou o preferido, depois o padrao"
     assert recusa.liberado == 1, "o dispositivo que nao abriu tambem e devolvido"
     assert meta["resolucao_nativa"] == (1280, 720), "capturou pelo fallback"
+
+
+# ------------------------------------------------------------- saturacao
+async def test_espera_a_saturacao_cair_mesmo_com_brilho_estavel() -> None:
+    """Parede branca ou tela clara: o brilho assenta ANTES da saturacao.
+
+    E o caso que a estabilidade de brilho sozinha nao pega. O brilho para de
+    mudar num patamar alto, o laco diria "convergiu", e a foto sairia com o
+    branco chapado e a letra sumida junto.
+    """
+    device = DeviceFalso(
+        brilhos=[200.0] * 20,
+        saturacoes=[0.80, 0.70, 0.55, 0.40, 0.30, 0.20, 0.12, 0.08, 0.04, 0.02],
+    )
+    camera, _ = _camera(device)
+
+    async with camera:
+        _, meta = await camera.capturar()
+
+    assert meta["exposicao_convergiu"] is True
+    assert meta["saturacao"] <= 0.05
+    assert device.leituras >= 9, "esperou a saturacao cair, nao so o brilho parar"
+
+
+async def test_cena_escura_nao_espera_a_toa() -> None:
+    """0% de saturacao desde o quadro zero: nada a esperar alem do piso.
+
+    O outro lado da moeda - so o criterio de saturacao sairia no primeiro
+    quadro, sem aquecimento nenhum.
+    """
+    device = DeviceFalso(brilhos=[40.0] * 20, saturacoes=[0.0] * 20)
+    camera, _ = _camera(device)
+
+    async with camera:
+        _, meta = await camera.capturar()
+
+    assert meta["exposicao_convergiu"] is True
+    assert device.leituras == QUADROS_DE_AQUECIMENTO, "respeitou o piso, e so"
+
+
+async def test_parede_branca_de_verdade_desiste_e_avisa() -> None:
+    """Saturacao que nunca cede: a foto sai, com exposicao_convergiu falso.
+
+    Travar seria pior. Mas quem for ler texto precisa saber que a imagem pode
+    estar estourada - e a diferenca entre "nao ha texto" e "a foto queimou".
+    """
+    device = DeviceFalso(brilhos=[250.0] * 60, saturacoes=[0.9] * 60)
+    camera, _ = _camera(device)
+
+    async with camera:
+        _, meta = await camera.capturar()
+
+    assert meta["exposicao_convergiu"] is False
+    assert meta["saturacao"] > 0.05
+    assert device.leituras <= QUADROS_MAXIMOS

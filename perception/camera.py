@@ -6,11 +6,19 @@ imagem e ``tools/impl/visao.py``.
 
 Tres coisas aqui existem por causa de defeito real, nao de zelo:
 
-1. **Descartar os primeiros quadros.** Webcam liga com auto-exposicao e
-   auto-white-balance ainda convergindo. O primeiro quadro sai preto,
-   esverdeado ou estourado - e o modelo descreve com toda a confianca um
-   retangulo escuro, porque ele nao tem como saber que a foto e que estava
-   ruim.
+1. **Esperar a exposicao assentar, e nao contar quadros.** Webcam liga com
+   auto-exposicao ainda convergindo, e o tempo disso depende da cena. Medido
+   apontando para uma tela clara num quarto escuro::
+
+       quadro    brilho   pixels saturados
+            0     180,6            57,1%
+            5     227,4            80,3%   <- onde o codigo capturava
+           10     182,4            32,3%
+           20     140,9             2,1%
+           39      99,7             0,0%   <- texto legivel
+
+   Um numero fixo de 5 nao era so insuficiente: caia perto do PICO da
+   superexposicao, e a foto saia um retangulo branco. Ver ``_aquecer``.
 
 2. **Redimensionar como regra fixa, nunca como caso especial.** Custo de imagem
    e ``(largura x altura) / 750`` tokens. Uma webcam 4K entregando quadro cru
@@ -34,7 +42,13 @@ Custo medido numa webcam 720p real, com a escolha de backend de ``_abrir``::
 
 Quase toda essa latencia e abertura de dispositivo e primeiro quadro; a
 codificacao JPEG leva 3 ms. Vale para dimensionar expectativa: uma pergunta com
-visao custa ~2 s a mais que uma sem, antes mesmo de falar com o modelo.
+visao custa ~2 s a mais que uma sem, antes mesmo de falar com o modelo. Cena
+clara paga mais, porque o aquecimento espera a exposicao assentar - foi de
+2,1 s para 4,1 s com uma tela branca no quadro, e valeu: e a diferenca entre
+uma foto legivel e um retangulo branco.
+
+Os quatro defeitos que a webcam de verdade revelou, com a medicao de cada um,
+estao em ``docs/CAMERA.md``. Nenhum deles aparece em teste com mock.
 """
 
 from __future__ import annotations
@@ -67,18 +81,48 @@ log = get_logger("perception.camera")
 # para ler. Num quarto escuro e uniforme a exposicao ja nasce estavel e o laco
 # sai em poucos quadros; e diante de algo claro que ele ganha o tempo que
 # precisa. Numero fixo nao cobre os dois casos.
+#
+# O criterio e DUPLO, porque cada metade falha num cenario oposto:
+#
+# - so estabilidade de brilho: uma parede branca de verdade assenta em 250 com
+#   60% dos pixels estourados. Sairia "convergido" com a foto ilegivel.
+# - so saturacao: um quarto escuro tem 0% de saturacao desde o quadro zero.
+#   Sairia no primeiro quadro, sem aquecimento nenhum - que e justamente o que
+#   o piso existe para impedir.
+#
+# Sai quando o brilho parou de mudar E a saturacao esta aceitavel, respeitando
+# o piso. Se um dos dois nao acontecer, quem manda e o teto.
 QUADROS_DE_AQUECIMENTO = 5
 QUADROS_MAXIMOS = 45
 # Variacao de brilho entre quadros abaixo da qual consideramos estavel.
 ESTABILIDADE = 0.015
 QUADROS_ESTAVEIS = 3
+# Fracao de pixels estourados que ainda permite ler texto. Acima disso o branco
+# vira chapado e a letra some junto.
+SATURACAO_MAXIMA = 0.05
 # Teto de tempo: cena que pisca (monitor, lampada) nunca estabiliza, e esperar
 # para sempre seria pior que uma foto imperfeita.
 TEMPO_MAXIMO_MS = 3000.0
+# Amostragem 1 em 4 nas duas dimensoes: 1/16 dos pixels. Medir brilho e
+# saturacao no quadro inteiro custa ~4 ms, e a 45 quadros isso e um quinto de
+# segundo gasto para refinar uma media que ja e estavel na amostra.
+PASSO_DA_AMOSTRA = 4
 
 # Qualidade do JPEG. 85 e o ponto onde artefato de compressao ainda nao atrapalha
 # leitura de texto pequeno, e o upload nao dobra de tamanho a toa.
 QUALIDADE_JPEG = 85
+
+
+def _metricas(quadro: Any) -> tuple[float, float]:
+    """Brilho medio e fracao de pixels estourados, sobre uma amostra do quadro.
+
+    A amostra existe por custo: medir os 2,7 milhoes de valores de um quadro
+    720p leva alguns milissegundos, e o laco de aquecimento faz isso ate 45
+    vezes. Um em cada quatro pixels nas duas dimensoes da a mesma resposta para
+    medias globais.
+    """
+    amostra = quadro[::PASSO_DA_AMOSTRA, ::PASSO_DA_AMOSTRA]
+    return float(amostra.mean()), float((amostra > 250).mean())
 
 
 class CameraIndisponivelError(RuntimeError):
@@ -220,7 +264,7 @@ class CameraCapture:
         device.set(cv2.CAP_PROP_FRAME_WIDTH, largura)
         device.set(cv2.CAP_PROP_FRAME_HEIGHT, altura)
 
-        descartados, convergiu, quadro = self._aquecer(device)
+        descartados, convergiu, saturacao, quadro = self._aquecer(device)
         if quadro is None:
             raise CameraIndisponivelError(
                 f"camera {self._indice} abriu mas nao entregou quadro"
@@ -242,16 +286,19 @@ class CameraCapture:
             # le texto precisa saber disso: e a diferenca entre "nao ha texto"
             # e "havia texto e a foto estourou".
             "exposicao_convergiu": convergiu,
+            "saturacao": round(saturacao, 4),
         }
 
-    def _aquecer(self, device: Any) -> tuple[int, bool, Any]:
-        """Le quadros ate a exposicao estabilizar. Devolve (descartados, convergiu, quadro).
+    def _aquecer(self, device: Any) -> tuple[int, bool, float, Any]:
+        """Le quadros ate a exposicao assentar.
 
-        O ultimo quadro lido e o que vale - nao ha leitura extra depois do
-        laco. Ler mais um so gastaria tempo e devolveria a mesma cena.
+        Devolve ``(descartados, convergiu, saturacao, quadro)``. O ultimo quadro
+        lido e o que vale - nao ha leitura extra depois do laco, que so gastaria
+        tempo para devolver a mesma cena.
         """
         anterior: float | None = None
         estaveis = 0
+        saturacao = 0.0
         quadro = None
         lidos = 0
         limite = time.perf_counter() + TEMPO_MAXIMO_MS / 1000
@@ -262,31 +309,49 @@ class CameraCapture:
                 break
             quadro, lidos = novo, i + 1
 
-            brilho = float(novo.mean())
+            brilho, saturacao = _metricas(novo)
             if anterior is not None:
                 variacao = abs(brilho - anterior) / max(anterior, 1.0)
                 estaveis = estaveis + 1 if variacao < ESTABILIDADE else 0
             anterior = brilho
 
-            if i + 1 >= QUADROS_DE_AQUECIMENTO and estaveis >= QUADROS_ESTAVEIS:
-                return max(lidos - 1, 0), True, quadro
-            if time.perf_counter() > limite:
-                log.warning(
-                    "camera.exposicao_nao_estabilizou",
-                    quadros=lidos,
-                    motivo="tempo maximo",
-                    impacto="a foto pode sair clara ou escura demais",
-                )
-                return max(lidos - 1, 0), False, quadro
-
-        if quadro is not None and estaveis < QUADROS_ESTAVEIS:
-            log.warning(
-                "camera.exposicao_nao_estabilizou",
-                quadros=lidos,
-                motivo="teto de quadros",
-                impacto="a foto pode sair clara ou escura demais",
+            pronto = (
+                lidos >= QUADROS_DE_AQUECIMENTO
+                and estaveis >= QUADROS_ESTAVEIS
+                and saturacao <= SATURACAO_MAXIMA
             )
-        return max(lidos - 1, 0), estaveis >= QUADROS_ESTAVEIS, quadro
+            if pronto:
+                return max(lidos - 1, 0), True, saturacao, quadro
+            if time.perf_counter() > limite:
+                self._avisar_sem_convergir(lidos, saturacao, estaveis, "tempo maximo")
+                return max(lidos - 1, 0), False, saturacao, quadro
+
+        if quadro is not None:
+            self._avisar_sem_convergir(lidos, saturacao, estaveis, "teto de quadros")
+        return max(lidos - 1, 0), False, saturacao, quadro
+
+    def _avisar_sem_convergir(
+        self, quadros: int, saturacao: float, estaveis: int, motivo: str
+    ) -> None:
+        """Diz QUAL das duas metades falhou - as causas e os consertos diferem.
+
+        Saturacao alta com brilho estavel e cena clara demais para a camera:
+        afaste o objeto ou acenda a luz do ambiente. Brilho instavel e cena que
+        pisca, tipicamente um monitor.
+        """
+        culpa = (
+            "saturacao acima do limite" if saturacao > SATURACAO_MAXIMA
+            else "brilho ainda oscilando"
+        )
+        log.warning(
+            "camera.exposicao_nao_convergiu",
+            quadros=quadros,
+            motivo=motivo,
+            causa=culpa,
+            saturacao=round(saturacao, 3),
+            quadros_estaveis=estaveis,
+            impacto="a foto pode estar clara ou escura demais para ler texto",
+        )
 
     def _ajustar(
         self, cv2: Any, quadro: Any, nativa: tuple[int, int]
