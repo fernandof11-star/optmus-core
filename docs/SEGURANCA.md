@@ -77,3 +77,39 @@ ser antes da F6 (WhatsApp/Instagram), quando a superfície deixa de ser só sua.
 
 A mesma dívida vale para o Optmus Web, cuja senha de 6 dígitos gera um token
 estático equivalente a bearer permanente, sem proteção contra repetição.
+
+## Pendência aberta — confirmação de ação EXTERNA não tem interface
+
+**Registrada em 2026-08-20. Prioridade a decidir depois da F6 do frontend.**
+
+Ações de risco `EXTERNO` — hoje só a câmera (`olhar`), amanhã WhatsApp e
+Instagram na F6 do Core — não executam direto. A política cria uma confirmação
+pendente e devolve um token; quem confirma é um humano, por
+`POST /seguranca/confirmar`.
+
+**Esse humano não tem por onde confirmar.** O frontend web não tem tela de
+confirmação, e o caminho de voz depende do loop local. Consequência prática:
+
+- pelo frontend, `olhar` **nunca executa** — para no portão e fica lá;
+- o modelo recebe "AGUARDANDO CONFIRMACAO", diz ao usuário para confirmar, e
+  não há como;
+- o token expira sem uso.
+
+Hoje isso falha do lado seguro: nada acontece sem autorização, que é o
+comportamento correto. Mas é um elo faltante, não uma decisão — e quando a F6
+do Core trouxer mensagens para terceiros, "não dá para confirmar" deixa de ser
+inconveniente e passa a ser funcionalidade inteira inacessível.
+
+O que falta, quando for a hora:
+
+1. `GET /seguranca/pendentes` já existe e lista o que aguarda.
+2. Uma tela que mostre `resumo` (a frase pensada para ser lida em voz alta,
+   tipo "ligar a webcam e ler o que estiver na frente da camera") e ofereça
+   confirmar ou recusar.
+3. `POST /seguranca/confirmar` com o token — e a frase-código, quando o risco
+   for `DESTRUTIVO`.
+
+O ponto delicado do desenho: a confirmação precisa acontecer **no dispositivo
+de quem autoriza**, não em qualquer sessão autenticada. Um token de
+confirmação que qualquer aba com o bearer possa aprovar reduz o portão a um
+clique a mais.
