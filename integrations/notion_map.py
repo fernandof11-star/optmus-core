@@ -227,6 +227,28 @@ def carregar(caminho: Path) -> NotionMap:
     return de_dict(bruto)
 
 
+def de_texto(texto: str) -> NotionMap:
+    """Monta o mapa a partir de um JSON em texto.
+
+    O caminho de producao: o mapa chega por variavel de ambiente em vez de
+    arquivo, porque ele identifica bases pessoais e nao pode viajar no
+    repositorio nem na imagem.
+
+    JSON invalido levanta com o motivo. Devolver um mapa vazio aqui seria pior:
+    todo /notion/* passaria a dizer "mapa incompleto", e ninguem ligaria isso a
+    uma virgula sobrando na variavel.
+    """
+    try:
+        bruto = json.loads(texto)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"OPTMUS_NOTION_MAP_JSON nao e JSON valido: {exc}"
+        ) from exc
+    if not isinstance(bruto, dict):
+        raise ValueError("OPTMUS_NOTION_MAP_JSON precisa ser um objeto JSON")
+    return de_dict(bruto)
+
+
 def de_dict(bruto: dict[str, Any]) -> NotionMap:
     return NotionMap(
         financeiro=MapaFinanceiro(**(bruto.get("financeiro") or {})),

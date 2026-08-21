@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     log_level: LogLevel = LogLevel.INFO
     log_json: bool | None = None
 
+    # O mapa das bases do Notion, como JSON, direto do ambiente.
+    #
+    # Existe porque o mapa e configuracao que IDENTIFICA RECURSO PESSOAL: ele
+    # carrega os database_id das bases do usuario, e este repositorio e
+    # publico. Nao pode ir para a imagem nem para o git.
+    #
+    # SecretStr para nao aparecer em repr, log ou traceback. Nao e credencial -
+    # ler exige OPTMUS_NOTION_TOKEN -, mas e identificador estavel de dado
+    # pessoal, e nada ganha em ser impresso.
+    notion_map_json: SecretStr | None = None
+
     # Origens que podem chamar a API de dentro de um navegador. Lista explicita,
     # nunca "*": o navegador so faz valer a regra de mesma origem se o servidor
     # disser quem pode. O padrao cobre o `vite dev`; o dominio da Vercel entra

@@ -1187,3 +1187,56 @@ def test_mapa_carrega_de_dict() -> None:
     assert mapa.financeiro.database_id == "abc"
     assert mapa.financeiro.valor == "Preco"
     assert mapa.prazos[0].rotulo == "prova"
+
+
+# ----------------------------------------------- mapa vindo do ambiente
+def test_mapa_pode_vir_de_json_no_ambiente() -> None:
+    """Em producao o mapa nao pode ser arquivo: ele identifica bases pessoais,
+    e o repositorio e publico. Chega por variavel."""
+    from integrations.notion_map import de_texto
+
+    mapa = de_texto(
+        '{"financeiro": {"database_id": "abc", "valor": "Preco"},'
+        ' "prazos": [{"database_id": "xyz", "rotulo": "prova"}]}'
+    )
+    assert mapa.financeiro.database_id == "abc"
+    assert mapa.financeiro.valor == "Preco"
+    assert mapa.prazos[0].rotulo == "prova"
+
+
+def test_json_invalido_no_mapa_falha_com_o_motivo() -> None:
+    """Devolver mapa vazio faria todo /notion/* dizer "mapa incompleto", e
+    ninguem ligaria isso a uma virgula sobrando numa variavel de ambiente."""
+    from integrations.notion_map import de_texto
+
+    with pytest.raises(ValueError, match="OPTMUS_NOTION_MAP_JSON"):
+        de_texto('{"financeiro": {,}}')
+
+    with pytest.raises(ValueError, match="objeto JSON"):
+        de_texto('["nao", "e", "objeto"]')
+
+
+def test_variavel_tem_precedencia_sobre_o_arquivo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Se as duas existirem, manda o ambiente - e o caminho de producao."""
+    from main import _montar_notion_stats
+
+    arquivo = tmp_path / "notion_map.json"
+    arquivo.write_text('{"financeiro": {"database_id": "DO-ARQUIVO"}}', encoding="utf-8")
+
+    monkeypatch.setenv("OPTMUS_NOTION_MAP_PATH", str(arquivo))
+    monkeypatch.setenv("OPTMUS_NOTION_MAP_JSON", '{"financeiro": {"database_id": "DO-AMBIENTE"}}')
+    reset_settings_cache()
+
+    stats = _montar_notion_stats(get_settings())
+    assert stats._mapa.financeiro.database_id == "DO-AMBIENTE"
+
+
+def test_mapa_no_ambiente_nao_aparece_em_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SecretStr para o mapa nao vazar em log ou traceback."""
+    monkeypatch.setenv("OPTMUS_NOTION_MAP_JSON", '{"financeiro": {"database_id": "SEGREDO-X"}}')
+    reset_settings_cache()
+
+    assert "SEGREDO-X" not in repr(get_settings())
+    assert "SEGREDO-X" not in str(get_settings().notion_map_json)

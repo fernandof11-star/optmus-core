@@ -290,3 +290,44 @@ Como o mapa chega em produção hoje:
 
 Sem o mapa, `/notion/*` e `/relatorios/*` respondem "mapa incompleto". É
 degradação explícita — o Core não sobe número errado por falta de configuração.
+
+## Como o mapa do Notion chega em produção
+
+O `data/notion_map.json` **não vai para o git nem para a imagem** — ele carrega
+os `database_id` das bases pessoais, e este repositório é público. O caminho é
+`OPTMUS_NOTION_MAP_JSON`: o conteúdo do arquivo, inteiro, como valor de uma
+variável de ambiente.
+
+```
+Railway → o serviço → Variables → New Variable
+  Nome:  OPTMUS_NOTION_MAP_JSON
+  Valor: <cole o conteúdo inteiro de data/notion_map.json>
+```
+
+Cole o JSON como está, com quebras de linha. Railway aceita valor multilinha.
+
+**Por que não pelo Console do Railway.** Escrever o arquivo à mão no volume
+funciona uma vez e falha em silêncio depois:
+
+- depende de o volume estar montado em `/data` — sem volume, o arquivo morre
+  no próximo deploy e ninguém percebe até `/notion/*` voltar a dizer "mapa
+  incompleto";
+- o container roda como uid 10001; se o ponto de montagem vier como root, a
+  escrita é negada;
+- não fica registro em lugar nenhum. Seis meses depois ninguém sabe por que
+  funciona, nem como refazer.
+
+A variável sobrevive a redeploy, a recriação de volume e a troca de
+plataforma, e aparece no painel para quem for procurar.
+
+**Precedência:** a variável ganha do arquivo. Em desenvolvimento continua
+valendo `data/notion_map.json`, que é o que o `GET /notion/descobrir` gera.
+
+**O valor é `SecretStr`**: não aparece em `repr`, log nem traceback. O
+`/health` expõe só campos escolhidos e nomes de variáveis ausentes, nunca
+valores — conferido.
+
+**Se o JSON estiver inválido**, o endpoint falha dizendo
+`OPTMUS_NOTION_MAP_JSON nao e JSON valido: ...`. Deliberado: devolver um mapa
+vazio faria todo `/notion/*` dizer "mapa incompleto", e ninguém ligaria isso a
+uma vírgula sobrando numa variável.

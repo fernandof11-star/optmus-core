@@ -855,7 +855,17 @@ async def relatorio_mensal_dados(settings: SettingsDep) -> dict[str, Any]:
 
 
 def _montar_notion_stats(settings: Settings) -> NotionStats:
-    mapa = notion_map.carregar(settings.notion_map_file)
+    """Monta as agregacoes com o mapa do ambiente ou do disco.
+
+    A variavel tem precedencia sobre o arquivo. Em producao ela e o unico
+    caminho: o mapa identifica as bases pessoais do usuario e por isso nao vai
+    para a imagem (repositorio publico) nem depende de alguem lembrar de
+    escrever um arquivo no volume por um console.
+    """
+    if settings.notion_map_json is not None:
+        mapa = notion_map.de_texto(settings.notion_map_json.get_secret_value())
+    else:
+        mapa = notion_map.carregar(settings.notion_map_file)
     return NotionStats(settings, mapa)
 
 
