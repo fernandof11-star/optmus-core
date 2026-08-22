@@ -111,6 +111,17 @@ class ToolRegistry:
     def policy(self) -> PolicyEngine:
         return self._policy
 
+    @property
+    def audit(self) -> AuditLog:
+        """Trilha de auditoria, para quem precisa registrar fora da execucao.
+
+        A recusa de uma acao pendente acontece sem executar ferramenta nenhuma,
+        entao nao passa pelo caminho que audita sozinho - e uma negativa e
+        justamente o registro que mais falta quando alguem pergunta depois por
+        que algo nao aconteceu.
+        """
+        return self._audit
+
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"ferramenta duplicada: {tool.name}")

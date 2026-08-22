@@ -119,3 +119,66 @@ async def test_gatilho_sem_escuta_recusa_em_vez_de_aceitar_calado(
     resposta = await client.post("/voz/gatilho")
     assert resposta.status_code == 409
     assert "voz/texto" in resposta.json()["detail"]
+
+
+# ------------------------------------------- recusa de acao pendente (F6.3)
+async def _criar_pendente(client: AsyncClient) -> dict:
+    """Cria uma pendencia de verdade pelo caminho da politica."""
+    from security.policy import RiskLevel
+
+    registro = app.state.ferramentas
+    decisao = await registro.policy.avaliar(
+        ferramenta="olhar",
+        risco=RiskLevel.EXTERNO,
+        parametros={"modo": "descrever"},
+        resumo="ligar a webcam e olhar o ambiente",
+    )
+    assert decisao.exige_confirmacao
+    pendentes = (await client.get("/seguranca/pendentes")).json()
+    return next(p for p in pendentes if p["token"] == decisao.token)
+
+
+async def test_recusar_remove_a_pendencia(client: AsyncClient) -> None:
+    """Sem esta rota, recusar era "nao fazer nada e esperar 120 segundos" -
+    a pendencia ficava viva na tela depois de a pessoa ja ter decidido."""
+    pendente = await _criar_pendente(client)
+
+    resposta = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+    assert resposta.status_code == 200
+    assert resposta.json()["recusado"] is True
+
+    restantes = (await client.get("/seguranca/pendentes")).json()
+    assert all(p["token"] != pendente["token"] for p in restantes)
+
+
+async def test_recusa_fica_na_trilha_de_auditoria(client: AsyncClient) -> None:
+    """A negativa e o registro que mais falta quando alguem pergunta depois
+    por que algo NAO aconteceu. Sem auditar, a trilha guarda so os "sim"."""
+    pendente = await _criar_pendente(client)
+    await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+
+    trilha = (await client.get("/seguranca/auditoria")).json()
+    # "cancelado" e o termo do esquema para "o humano viu e nao quis" -
+    # distinto de "negado", que e a politica barrando sozinha.
+    recusas = [linha for linha in trilha if linha.get("decision") == "cancelado"]
+    assert recusas, "a recusa precisa aparecer na auditoria"
+    assert recusas[0]["tool"] == "olhar"
+
+
+async def test_recusar_token_desconhecido_e_404(client: AsyncClient) -> None:
+    """Token inventado nao pode responder 200: quem chamou precisa saber que
+    a acao que ele achava estar recusando ja nao existia."""
+    resposta = await client.post("/seguranca/recusar", json={"token": "inexistente-1234"})
+    assert resposta.status_code == 404
+
+
+async def test_recusar_duas_vezes_o_mesmo_token_da_404(client: AsyncClient) -> None:
+    """Duas abas abertas na mesma pendencia: a segunda precisa saber que
+    chegou tarde, em vez de achar que recusou de novo."""
+    pendente = await _criar_pendente(client)
+
+    primeira = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+    segunda = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+
+    assert primeira.status_code == 200
+    assert segunda.status_code == 404

@@ -44,7 +44,7 @@ from perception.wake import criar_detector
 from reports.mensal import ReportlabAusente, gerar_pdf, montar_dados
 from security.api_auth import TokenAuthMiddleware, verificar_exposicao
 from security.audit import AuditLog
-from security.policy import PolicyEngine
+from security.policy import PolicyEngine, RiskLevel
 from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
 from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
 from tools.impl.system import SistemaStatusTool
@@ -99,6 +99,10 @@ class FatoRequest(BaseModel):
     source: str = Field(default="api", max_length=60)
     confianca: float = Field(default=0.8, ge=0.0, le=1.0)
     supersedes: int | None = Field(default=None, description="id do fato que este corrige")
+
+
+class RecusarRequest(BaseModel):
+    token: str = Field(min_length=4, max_length=64)
 
 
 class ConfirmarRequest(BaseModel):
@@ -700,6 +704,42 @@ async def confirmar_acao(corpo: ConfirmarRequest, request: Request) -> dict[str,
         corpo.token, frase=corpo.frase_codigo, comando_origem="api"
     )
     return {"executado": not resultado.is_error, "resultado": resultado.content}
+
+
+@app.post("/seguranca/recusar", tags=["seguranca"])
+async def recusar_acao(corpo: RecusarRequest, request: Request) -> dict[str, Any]:
+    """Descarta uma acao pendente. O "nao" tambem e resposta.
+
+    Sem esta rota, recusar significava **nao fazer nada e esperar 120 segundos**
+    - e uma pendencia viva na tela por dois minutos depois de a pessoa ja ter
+    decidido que nao quer. Pior: nao deixava rastro, entao a trilha de auditoria
+    guardava as autorizacoes e nao as negativas, que sao o registro mais
+    importante quando alguem pergunta "por que isso nao aconteceu?".
+    """
+    registro: ToolRegistry = request.app.state.ferramentas
+    pendente = next(
+        (p for p in registro.policy.pendentes() if p["token"] == corpo.token), None
+    )
+    if pendente is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "token desconhecido ou ja expirado"
+        )
+
+    registro.policy.cancelar(corpo.token)
+    await registro.audit.registrar(
+        ferramenta=str(pendente["ferramenta"]),
+        risco=RiskLevel(pendente["risco"]),
+        # "cancelado", nao "recusado": o vocabulario da trilha ja distingue
+        # "negado" (a politica barrou, tipo teto de acoes por hora) de
+        # "cancelado" (o humano viu e nao quis). Inventar um terceiro termo
+        # quebraria o CHECK do esquema e, pior, apagaria essa distincao.
+        decisao="cancelado",
+        parametros={"resumo": pendente["resumo"]},
+        comando_origem="api",
+        resultado="recusado pelo humano na tela de confirmacao",
+    )
+    log.info("politica.recusada", ferramenta=pendente["ferramenta"], token=corpo.token)
+    return {"recusado": True, "ferramenta": pendente["ferramenta"]}
 
 
 @app.get("/seguranca/auditoria", tags=["seguranca"])
