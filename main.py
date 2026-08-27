@@ -25,6 +25,7 @@ from core import __version__
 from core.agent import Agent
 from core.bus import Event, EventBus, InProcessEventBus, Recorder
 from core.config import ConfigError, MissingConfigError, Settings, get_settings, runtime_notes
+from core.equipe import Equipe, equipe_padrao
 from core.llm import LLMClient, NullLLMClient, escolher_cliente
 from core.logging import configure_logging, get_logger
 from core.metrics import LatencyTracker
@@ -62,6 +63,15 @@ from security.dispositivos import (
     origem,
 )
 from security.policy import PolicyEngine, RiskLevel
+from tools.impl.dev import (
+    DevEscreverTool,
+    DevLerTool,
+    DevListarTool,
+    DevPublicarTool,
+    DevReverterTool,
+    DevTestarTool,
+)
+from tools.impl.equipe import DelegarTool
 from tools.impl.instagram import InstagramComentariosTool, InstagramResumoTool
 from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
 from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
@@ -281,6 +291,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tracker = tracker
     app.state.memoria = memoria
     app.state.ferramentas = ferramentas
+    # F11. Montada aqui, e nao em _montar_ferramentas, por dois motivos: o
+    # cliente de LLM so existe a partir deste ponto, e `equipe_padrao` precisa
+    # do registro JA populado - ela so inclui ferramenta que existe de fato,
+    # porque papel sem capacidade nenhuma faria o modelo aceitar a tarefa e
+    # improvisar a resposta.
+    #
+    # `delegar` fica so no nucleo: o RegistroFiltrado o remove de qualquer
+    # especialista, entao nao ha ciclo A->B->A para limitar.
+    equipe = Equipe(cliente, settings, ferramentas, equipe_padrao(ferramentas))
+    ferramentas.register(DelegarTool(equipe))
+    await ferramentas.refresh()
+    app.state.equipe = equipe
+
     app.state.dispositivos = RegistroDeDispositivos(store)
 
     # F7. As fontes so entram se tiverem de onde ler: proatividade sem fonte
@@ -403,6 +426,13 @@ async def _montar_ferramentas(
     # uma instrucao injetada de escolher o que abrir.
     registro.register(PcListarTool(settings))
     registro.register(PcAbrirTool(settings))
+    # F10. dev_publicar e EXTERNO mas tem o portao dispensado por decisao
+    # explicita do usuario (ver dev_sem_portao no config): o que foi revogado
+    # foi a trava humana no deploy, nao a sandbox nem a auditoria.
+    for ferramenta in (DevListarTool, DevLerTool, DevEscreverTool, DevTestarTool):
+        registro.register(ferramenta(settings, store))
+    registro.register(DevPublicarTool(settings, store))
+    registro.register(DevReverterTool(settings, store))
     await registro.refresh()
     log.info("ferramentas.montadas", quantidade=len(registro.schemas()))
     return registro
@@ -484,7 +514,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings_inicial.cors_origins,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    # Todo header que o frontend manda precisa estar aqui, e nao ha como o
+    # servidor descobrir isso sozinho: o navegador barra a chamada ANTES de ela
+    # sair, e o erro chega ao usuario como "falha de rede".
+    #
+    # Foi assim que o chat quebrou em 27/08/2026 - `X-Optmus-Dispositivo` entrou
+    # no cliente com o vinculo de dispositivo e nao entrou aqui. `tests/test_cors.py`
+    # encena o preflight do navegador justamente para isso nao repetir.
+    allow_headers=["Authorization", "Content-Type", "X-Optmus-Dispositivo"],
     # False de proposito: o token vai no header Authorization, nao em cookie.
     # Ligar isto sem necessidade permitiria que o navegador anexasse cookies de
     # sessao em requisicao de outra origem.

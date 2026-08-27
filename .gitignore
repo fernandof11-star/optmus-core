@@ -16,6 +16,8 @@ data/whatsapp.db
 data/contatos.json
 # Caminhos da sua maquina.
 data/alvos.json
+# Raizes dos seus projetos.
+data/projetos.json
 *.db
 *.db-wal
 *.db-shm
