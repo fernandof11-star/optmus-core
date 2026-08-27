@@ -78,38 +78,66 @@ ser antes da F6 (WhatsApp/Instagram), quando a superfície deixa de ser só sua.
 A mesma dívida vale para o Optmus Web, cuja senha de 6 dígitos gera um token
 estático equivalente a bearer permanente, sem proteção contra repetição.
 
-## Pendência aberta — confirmação de ação EXTERNA não tem interface
+## Confirmação vinculada ao dispositivo
 
-**Registrada em 2026-08-20. Prioridade a decidir depois da F6 do frontend.**
+**Pendência aberta em 2026-08-20, fechada em 2026-08-23.**
 
-Ações de risco `EXTERNO` — hoje só a câmera (`olhar`), amanhã WhatsApp e
-Instagram na F6 do Core — não executam direto. A política cria uma confirmação
-pendente e devolve um token; quem confirma é um humano, por
-`POST /seguranca/confirmar`.
+A tela de confirmação chegou na Fase 3 do frontend. Faltava a parte difícil: o
+Core aceitava a confirmação de **qualquer um que tivesse o `OPTMUS_API_TOKEN`**.
+A tela dizia "um humano autorizou"; o que o Core sabia era "alguém com o token
+da API autorizou". Para uma ação irreversível — mandar mensagem para outra
+pessoa — as duas coisas não são a mesma, e essa diferença era o que bloqueava
+o WhatsApp.
 
-**Esse humano não tem por onde confirmar.** O frontend web não tem tela de
-confirmação, e o caminho de voz depende do loop local. Consequência prática:
+### Por que um header não bastaria
 
-- pelo frontend, `olhar` **nunca executa** — para no portão e fica lá;
-- o modelo recebe "AGUARDANDO CONFIRMACAO", diz ao usuário para confirmar, e
-  não há como;
-- o token expira sem uso.
+A saída óbvia seria marcar a pendência com um `X-Optmus-Dispositivo` declarado.
+Isso daria atribuição na auditoria e impediria confusão entre abas — mas quem
+tivesse o token da API forjaria o header numa linha de `curl`. Vínculo sobre
+identidade forjável é teatro.
 
-Hoje isso falha do lado seguro: nada acontece sem autorização, que é o
-comportamento correto. Mas é um elo faltante, não uma decisão — e quando a F6
-do Core trouxer mensagens para terceiros, "não dá para confirmar" deixa de ser
-inconveniente e passa a ser funcionalidade inteira inacessível.
+Para virar garantia, a identidade do dispositivo precisa ser um segredo que o
+token da API **não** concede.
 
-O que falta, quando for a hora:
+### Como funciona
 
-1. `GET /seguranca/pendentes` já existe e lista o que aguarda.
-2. Uma tela que mostre `resumo` (a frase pensada para ser lida em voz alta,
-   tipo "ligar a webcam e ler o que estiver na frente da camera") e ofereça
-   confirmar ou recusar.
-3. `POST /seguranca/confirmar` com o token — e a frase-código, quando o risco
-   for `DESTRUTIVO`.
+1. Cada aparelho gera um segredo de 256 bits na primeira vez (no `localStorage`
+   do navegador) e o apresenta uma única vez em `POST /seguranca/dispositivos`.
+2. A pendência nasce **carimbada** com quem a pediu — no `/chat`, o header; no
+   laço de voz, `voz-local`.
+3. Confirmar e recusar exigem `dispositivo` + `prova`, onde a prova é
+   `HMAC-SHA256(segredo, "ação:token")`. O segredo nunca mais trafega.
+4. O Core responde duas perguntas, nesta ordem: **quem é você** (a prova bate
+   com o segredo registrado?) e **você pode confirmar isto** (a pendência foi
+   pedida por você?).
 
-O ponto delicado do desenho: a confirmação precisa acontecer **no dispositivo
-de quem autoriza**, não em qualquer sessão autenticada. Um token de
-confirmação que qualquer aba com o bearer possa aprovar reduz o portão a um
-clique a mais.
+A ação entra no HMAC junto do token porque confirmar e recusar são decisões
+opostas: sem isso, uma prova capturada para recusar serviria para confirmar. E
+o token entra porque a prova precisa valer para **uma** ação, não para o
+aparelho inteiro.
+
+`GET /seguranca/pendentes` filtra pelo aparelho: cartão que ele não consegue
+autorizar só produz clique com erro.
+
+### O que isto NÃO garante — os três pontos fracos, ditos por extenso
+
+**Confio-no-primeiro-uso.** O primeiro que apresentar um id novo fica dono dele.
+Quem tivesse o token da API antes do seu HUD registrar poderia registrar um
+aparelho próprio. O que ele **não** pode é tomar um id já registrado: reapresentar
+um id com outro segredo devolve 409, e é essa recusa que sustenta o resto.
+
+**Pedido por voz é confirmável por qualquer aparelho registrado.** O microfone
+não produz HMAC, e hoje não existe confirmação falada — o registro devolve "a
+confirmação chega por fora", e "por fora" é a tela. Fechar isso tornaria toda
+ação externa pedida por voz impossível de autorizar. É abertura declarada, e a
+auditoria grava qual aparelho autorizou. Quando existir confirmação por voz,
+aperte aqui.
+
+**Pedido sem identificação nasce sem dono**, e sem dono aceita confirmação de
+qualquer aparelho registrado. Vale para script e `curl`, que precisam continuar
+funcionando. O HUD sempre manda o header — há teste para isso, porque foi
+exatamente o defeito que quase passou.
+
+**O segredo mora no `localStorage`.** Ele protege contra quem tem o token da
+API; **não** protege contra XSS nesta origem. Apertar isso exigiria chave
+não-extraível no IndexedDB via WebCrypto.

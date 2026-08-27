@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from core.agent import Agent
 from core.bus import EventBus
 from core.config import Settings
+from core.llm import Imagem
 from core.logging import get_logger
 from core.metrics import LatencyTracker, TurnMetrics
 from core.router import Acao, Camada, IntentRouter
@@ -36,6 +37,7 @@ from memory.system import MemorySystem
 from perception.stt import Transcriber
 from perception.vad import UtteranceCapture
 from perception.wake import WakeDetector
+from security.dispositivos import ORIGEM_DESCONHECIDA, ORIGEM_VOZ, origem
 
 log = get_logger("core.voice_loop")
 
@@ -178,8 +180,85 @@ class VoiceLoop:
 
         return await self._rodar_agente(texto, turn_id, turno, falar=falar)
 
+    async def retomar_apos_confirmacao(
+        self,
+        *,
+        ferramenta: str,
+        resumo: str,
+        resultado: str,
+        erro: bool = False,
+        imagens: Sequence[Imagem] = (),
+        origem: str = ORIGEM_DESCONHECIDA,
+        correlation_id: str | None = None,
+    ) -> TurnOutcome:
+        """Devolve ao agente o que uma acao confirmada produziu.
+
+        ## O buraco que isto fecha
+
+        A confirmacao acontece FORA do turno: o turno que pediu a acao ja
+        terminou - tinha que terminar, porque o usuario precisava ouvir a
+        pergunta. Quando o "sim" chegava por HTTP, ``executar_confirmado``
+        rodava a ferramenta e devolvia o resultado para... a resposta HTTP. O
+        agente nunca via. Com a camera isso era literal: ela capturava, o
+        quadro ia para o campo ``imagens``, e ninguem olhava.
+
+        ## Turno novo, e nao retomada do antigo
+
+        A alternativa seria suspender o laco do agente esperando o "sim" e
+        responder o ``tool_use`` original com o resultado de verdade. Nao da,
+        por tres motivos concretos: aquele ``tool_use`` **ja foi respondido**
+        com "AGUARDANDO CONFIRMACAO" e nao se responde duas vezes; segurar uma
+        corrotina viva por ate 120 s prenderia ``self._turno``, que e slot
+        unico, bloqueando qualquer outra fala; e um reinicio do processo
+        perderia a acao no meio.
+
+        Entao entra como turno novo, com o resultado no texto de abertura e a
+        foto anexada. O historico ja tem a pergunta e o "posso ligar a webcam?",
+        entao a conversa continua coerente.
+
+        ## Quem ouve a resposta
+
+        ``origem`` decide, e por isso o vinculo de dispositivo veio antes: se a
+        pendencia nasceu da voz, a pessoa nao esta olhando para a tela e a
+        resposta e falada. Se nasceu do HUD, quem sintetiza e o navegador -
+        falar aqui faria o Core falar em voz alta na maquina onde ele roda.
+        """
+        turn_id = correlation_id or uuid.uuid4().hex[:12]
+        turno = TurnMetrics(f"{turn_id}-retomada")
+        self._turno = turno
+
+        # Texto de evento, nao de usuario. O modelo precisa saber que isto e o
+        # desfecho de algo que ELE pediu e um humano autorizou - se parecesse
+        # fala do usuario, ele responderia como se tivessem lhe contado.
+        situacao = "falhou" if erro else "foi autorizada e executada"
+        abertura = (
+            f"[sistema] A acao pendente ({resumo}) {situacao}. "
+            f"Resultado de {ferramenta}: {resultado}. "
+            "Comente o resultado para o usuario, em uma ou duas frases. "
+            "Nao chame a ferramenta de novo."
+        )
+
+        falar = origem == ORIGEM_VOZ
+        log.info(
+            "voz.retomada",
+            ferramenta=ferramenta,
+            origem=origem,
+            imagens=len(imagens),
+            falar=falar,
+        )
+        return await self._rodar_agente(
+            abertura, turn_id, turno, falar=falar, imagens=imagens, entrada_visivel=resumo
+        )
+
     async def _rodar_agente(
-        self, texto: str, turn_id: str, turno: TurnMetrics, *, falar: bool = True
+        self,
+        texto: str,
+        turn_id: str,
+        turno: TurnMetrics,
+        *,
+        falar: bool = True,
+        imagens: Sequence[Imagem] = (),
+        entrada_visivel: str | None = None,
     ) -> TurnOutcome:
         self._synth.resume()
 
@@ -216,6 +295,7 @@ class VoiceLoop:
                 # on_text so faz sentido com alguem consumindo a fila.
                 on_text=fila.put if falar else None,
                 correlation_id=turn_id,
+                imagens=imagens,
             )
 
         await fila.put(None)
@@ -229,12 +309,18 @@ class VoiceLoop:
 
         if self._memory is not None:
             with turno.stage("memoria_gravacao"):
-                await self._memory.record_turn(texto, resultado.text, correlation_id=turn_id)
+                # Grava o que a pessoa reconheceria, nao o andaime "[sistema]
+                # A acao pendente...". A memoria episodica e lida por humano e
+                # realimenta turnos futuros; um bloco de instrucao interna ali
+                # vira contexto falso na proxima recuperacao.
+                await self._memory.record_turn(
+                    entrada_visivel or texto, resultado.text, correlation_id=turn_id
+                )
 
         return await self._finalizar(
             TurnOutcome(
                 turn_id=turn_id,
-                entrada=texto,
+                entrada=entrada_visivel or texto,
                 resposta=resultado.text,
                 camada=Camada.LLM,
                 rodadas=resultado.rounds,
@@ -344,7 +430,11 @@ class VoiceLoop:
             self._turno = None
             return
 
-        await self.handle_text(transcricao.text, source="voz", turn_id=turn_id)
+        # A voz nao tem dispositivo que assine - o microfone nao produz HMAC.
+        # Carimbar ORIGEM_VOZ e o que permite a tela autorizar depois: a
+        # politica trata essa origem como abertura declarada, nao como falha.
+        with origem(ORIGEM_VOZ):
+            await self.handle_text(transcricao.text, source="voz", turn_id=turn_id)
 
     # -------------------------------------------------------- kill switch
     async def stop_speaking(self) -> None:

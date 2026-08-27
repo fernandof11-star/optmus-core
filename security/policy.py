@@ -19,6 +19,7 @@ autoriza ou exige confirmacao.
 
 from __future__ import annotations
 
+import hmac
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,7 @@ from typing import Any
 from core.config import Settings
 from core.logging import get_logger
 from memory.store import Store
+from security.dispositivos import ORIGEM_DESCONHECIDA, ORIGEM_VOZ, origem_atual
 
 log = get_logger("security.policy")
 
@@ -73,9 +75,27 @@ class Pendente:
     resumo: str
     criado_em: datetime = field(default_factory=lambda: datetime.now(UTC))
     correlation_id: str | None = None
+    origem: str = ORIGEM_DESCONHECIDA
+    """Quem pediu. E contra isto que a confirmacao e conferida depois."""
 
     def expirado(self, ttl_s: float) -> bool:
         return (datetime.now(UTC) - self.criado_em).total_seconds() > ttl_s
+
+    def confirmavel_por(self, dispositivo: str) -> bool:
+        """Quem pode autorizar esta acao.
+
+        A regra e "o mesmo que pediu", com **uma abertura declarada**: pedido
+        vindo da voz nao tem dispositivo que assine - o microfone nao produz
+        HMAC - e hoje nao existe confirmacao falada, so a tela. Fechar isso
+        tornaria toda acao externa pedida por voz impossivel de autorizar, que
+        e pior que a abertura. Pedido sem origem identificada cai no mesmo caso.
+
+        A abertura e para dispositivo **registrado**: quem tem so o token da
+        API continua de fora. E a auditoria grava qual deles autorizou.
+        """
+        if self.origem in (ORIGEM_VOZ, ORIGEM_DESCONHECIDA):
+            return True
+        return hmac.compare_digest(self.origem, dispositivo)
 
 
 class PolicyEngine:
@@ -112,6 +132,18 @@ class PolicyEngine:
         if risco is RiskLevel.LEITURA or risco is RiskLevel.ESCRITA:
             return Decisao(permitido=True)
 
+        if ferramenta in self._settings.dev_sem_portao and risco is RiskLevel.EXTERNO:
+            # Dispensa de confirmacao, decidida pelo usuario e registrada em
+            # docs/MODO_DESENVOLVEDOR.md. Vale SO para EXTERNO: DESTRUTIVO
+            # continua exigindo frase-codigo, porque o que foi revogado foi o
+            # portao do deploy - nao o de apagar historico.
+            #
+            # A acao continua auditada como qualquer outra. Dispensar o portao
+            # nao dispensa o registro; e justamente sem humano no caminho que a
+            # trilha passa a ser a unica forma de saber o que aconteceu.
+            log.info("politica.portao_dispensado", ferramenta=ferramenta)
+            return Decisao(permitido=True, motivo="confirmacao dispensada por decisao do usuario")
+
         pendente = Pendente(
             token=secrets.token_urlsafe(8),
             ferramenta=ferramenta,
@@ -119,6 +151,9 @@ class PolicyEngine:
             risco=risco,
             resumo=resumo or ferramenta,
             correlation_id=correlation_id,
+            # Carimbada no nascimento, e nao na confirmacao: depois que a acao
+            # esta pendente nao ha mais como saber de onde ela veio.
+            origem=origem_atual(),
         )
         self._pendentes[pendente.token] = pendente
         log.info(
@@ -126,6 +161,7 @@ class PolicyEngine:
             ferramenta=ferramenta,
             risco=risco.value,
             token=pendente.token,
+            origem=pendente.origem,
         )
 
         destrutivo = risco is RiskLevel.DESTRUTIVO
@@ -143,18 +179,38 @@ class PolicyEngine:
         """Janela cancelavel antes de executar acao destrutiva."""
         return self._settings.destructive_delay_s
 
-    def confirmar(self, token: str, *, frase: str | None = None) -> Pendente:
+    def confirmar(
+        self, token: str, *, frase: str | None = None, dispositivo: str | None = None
+    ) -> Pendente:
         """Valida a confirmacao e devolve a acao liberada.
 
-        Lanca ``PermissionError`` em token invalido, expirado ou frase errada -
-        e o pendente e descartado de qualquer forma, para nao virar um alvo que
-        se pode tentar adivinhar varias vezes.
+        Lanca ``PermissionError`` em token invalido, expirado, frase errada ou
+        dispositivo sem direito - e o pendente e descartado de qualquer forma,
+        para nao virar um alvo que se pode tentar adivinhar varias vezes.
+
+        Este metodo responde "voce pode confirmar ISTO?". Ele nao responde
+        "voce e quem diz ser" - essa e a pergunta do
+        :class:`~security.dispositivos.RegistroDeDispositivos`, e ela ja foi
+        respondida quando a execucao chega aqui. Separadas de proposito: uma
+        precisa do banco, a outra e pura e da para testar sem I/O.
         """
         pendente = self._pendentes.pop(token, None)
         if pendente is None:
             raise PermissionError("token de confirmacao invalido ou ja usado")
         if pendente.expirado(self.TTL_CONFIRMACAO_S):
             raise PermissionError("confirmacao expirada: peca a acao de novo")
+
+        if dispositivo is not None and not pendente.confirmavel_por(dispositivo):
+            log.warning(
+                "politica.confirmacao_de_outro_dispositivo",
+                ferramenta=pendente.ferramenta,
+                pediu=pendente.origem,
+                confirmou=dispositivo,
+            )
+            raise PermissionError(
+                "esta acao foi pedida em outro dispositivo e so pode ser "
+                "confirmada la"
+            )
 
         if pendente.risco is RiskLevel.DESTRUTIVO:
             esperada = self._settings.destructive_passphrase
@@ -171,7 +227,13 @@ class PolicyEngine:
     def cancelar(self, token: str) -> bool:
         return self._pendentes.pop(token, None) is not None
 
-    def pendentes(self) -> list[dict[str, Any]]:
+    def pendentes(self, *, para: str | None = None) -> list[dict[str, Any]]:
+        """As pendencias que ``para`` pode confirmar.
+
+        Filtrado, e nao a lista toda: um cartao que o dispositivo nao consegue
+        autorizar so serve para a pessoa clicar e receber erro - e para mostrar
+        a um aparelho o que o outro esta fazendo.
+        """
         return [
             {
                 "token": p.token,
@@ -180,8 +242,10 @@ class PolicyEngine:
                 "resumo": p.resumo,
                 "criado_em": p.criado_em.isoformat(),
                 "expirado": p.expirado(self.TTL_CONFIRMACAO_S),
+                "origem": p.origem,
             }
             for p in self._pendentes.values()
+            if para is None or p.confirmavel_por(para)
         ]
 
     def limpar_expirados(self) -> int:

@@ -12,7 +12,7 @@ sozinho a noite inteira.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -114,10 +114,26 @@ class Agent:
         context: str | None = None,
         on_text: TextSink | None = None,
         correlation_id: str | None = None,
+        imagens: Sequence[Imagem] = (),
     ) -> AgentResult:
-        """Roda o turno completo. ``on_text`` recebe os deltas para o TTS."""
+        """Roda o turno completo. ``on_text`` recebe os deltas para o TTS.
+
+        ``imagens`` entra junto do texto de abertura. Existe para um caso que
+        nao passa por ferramenta nenhuma: a acao foi confirmada FORA do turno,
+        ja executou, e o que ela produziu - a foto da webcam - precisa chegar
+        ao modelo num turno novo. Sem isto a camera capturava e ninguem olhava.
+        """
         sistema = self.build_system(context)
-        mensagens: list[dict[str, Any]] = [*(history or []), {"role": "user", "content": user_text}]
+        abertura: Any = user_text
+        if imagens:
+            # Texto primeiro, imagem depois: o texto diz o que a imagem e. Um
+            # bloco de imagem solto chega sem contexto - mesma ordem do
+            # tool_result em `_executar_uma`.
+            abertura = [
+                {"type": "text", "text": user_text},
+                *(imagem.bloco() for imagem in imagens),
+            ]
+        mensagens: list[dict[str, Any]] = [*(history or []), {"role": "user", "content": abertura}]
         esquemas = self._montar_ferramentas()
         chamadas: list[ToolCall] = []
         turno: LLMTurn | None = None
@@ -275,7 +291,20 @@ def _descartar_imagens(mensagens: list[dict[str, Any]]) -> int:
         if not isinstance(blocos, list):
             continue
         for bloco in blocos:
-            if not isinstance(bloco, dict) or bloco.get("type") != "tool_result":
+            if not isinstance(bloco, dict):
+                continue
+            # Imagem solta numa mensagem de usuario - o caminho da retomada
+            # apos confirmacao. Sem este ramo ela nao era tool_result, escapava
+            # do despejo e viajava nas seis rodadas: ate seis vezes o preco de
+            # um quadro que o modelo ja tinha olhado na primeira.
+            if bloco.get("type") == "image":
+                mensagem["content"] = [
+                    {"type": "text", "text": MARCADOR_IMAGEM} if b is bloco else b
+                    for b in blocos
+                ]
+                trocadas += 1
+                continue
+            if bloco.get("type") != "tool_result":
                 continue
             conteudo = bloco.get("content")
             if not isinstance(conteudo, list):

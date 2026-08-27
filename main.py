@@ -28,6 +28,15 @@ from core.config import ConfigError, MissingConfigError, Settings, get_settings,
 from core.llm import LLMClient, NullLLMClient, escolher_cliente
 from core.logging import configure_logging, get_logger
 from core.metrics import LatencyTracker
+from core.proatividade import AgendadorProativo, Proatividade
+from core.proatividade_fontes import (
+    CanalBarramento,
+    CanalComposto,
+    CanalTelegram,
+    CompositorLLM,
+    PrazosDoNotion,
+    RotinasDaMemoria,
+)
 from core.router import IntentRouter
 from core.voice_loop import TurnOutcome, VoiceLoop
 from expression.tts import criar_sintetizador
@@ -44,11 +53,23 @@ from perception.wake import criar_detector
 from reports.mensal import ReportlabAusente, gerar_pdf, montar_dados
 from security.api_auth import TokenAuthMiddleware, verificar_exposicao
 from security.audit import AuditLog
+from security.dispositivos import (
+    ORIGEM_DESCONHECIDA,
+    DispositivoDesconhecido,
+    IdJaRegistrado,
+    ProvaInvalida,
+    RegistroDeDispositivos,
+    origem,
+)
 from security.policy import PolicyEngine, RiskLevel
+from tools.impl.instagram import InstagramComentariosTool, InstagramResumoTool
 from tools.impl.memory_tools import LembrarTool, PerfilAtualizarTool, RecordarTool
 from tools.impl.optmus_web import OptmusWebChatTool, OptmusWebClient, OptmusWebTool
+from tools.impl.pc import PcAbrirTool, PcListarTool
 from tools.impl.system import SistemaStatusTool
+from tools.impl.telegram import TelegramEnviarTool
 from tools.impl.visao import OlharTool
+from tools.impl.whatsapp import WhatsAppEnviarTool
 from tools.registry import ToolRegistry
 
 log = get_logger("main")
@@ -60,7 +81,7 @@ INICIO = datetime.now(UTC)
 REQUISITOS_POR_FASE: dict[str, tuple[str, ...]] = {
     "F1_voz": ("anthropic_api_key", "elevenlabs_api_key", "elevenlabs_voice_id"),
     "F3_optmus_web": ("web_base_url", "web_password"),
-    "F6_whatsapp": ("whatsapp_token", "whatsapp_phone_number_id"),
+    "F6_telegram": ("telegram_bot_token", "telegram_chat_id"),
     "F6_instagram": ("instagram_token", "instagram_account_id"),
     "F6_casa": ("homeassistant_base_url", "homeassistant_token"),
     "seguranca_destrutivo": ("destructive_passphrase",),
@@ -101,13 +122,30 @@ class FatoRequest(BaseModel):
     supersedes: int | None = Field(default=None, description="id do fato que este corrige")
 
 
-class RecusarRequest(BaseModel):
+class DecisaoRequest(BaseModel):
+    """Base de confirmar/recusar: as duas exigem a mesma prova de dispositivo.
+
+    Recusar tambem assina porque uma recusa forjada grava na trilha que VOCE
+    disse "nao" - falsificar o registro de uma decisao sua e tao grave quanto
+    forjar a decisao.
+    """
+
     token: str = Field(min_length=4, max_length=64)
+    dispositivo: str = Field(min_length=4, max_length=64)
+    prova: str = Field(min_length=64, max_length=64, description="HMAC-SHA256 em hex")
 
 
-class ConfirmarRequest(BaseModel):
-    token: str = Field(min_length=4, max_length=64)
+class RecusarRequest(DecisaoRequest):
+    pass
+
+
+class ConfirmarRequest(DecisaoRequest):
     frase_codigo: str | None = Field(default=None, description="exigida em acao DESTRUTIVA")
+
+
+class RegistrarDispositivoRequest(BaseModel):
+    dispositivo: str = Field(min_length=4, max_length=64)
+    segredo: str = Field(min_length=32, max_length=256)
 
 
 class TurnoResponse(BaseModel):
@@ -243,6 +281,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tracker = tracker
     app.state.memoria = memoria
     app.state.ferramentas = ferramentas
+    app.state.dispositivos = RegistroDeDispositivos(store)
+
+    # F7. As fontes so entram se tiverem de onde ler: proatividade sem fonte
+    # nao e "silenciosa", e um agendador acordando de meia em meia hora para
+    # nao fazer nada.
+    fontes: list[Any] = [RotinasDaMemoria(memoria.procedural)]
+    notion_stats = _montar_notion_stats(settings)
+    if notion_stats is not None:
+        fontes.append(PrazosDoNotion(notion_stats))
+
+    proatividade = Proatividade(
+        settings,
+        store,
+        compositor=CompositorLLM(cliente, settings),
+        canal=CanalComposto([CanalBarramento(bus), CanalTelegram(settings)]),
+        fontes=fontes,
+        audit=ferramentas.audit,
+    )
+    app.state.proatividade = proatividade
+    app.state.agendador_proativo = AgendadorProativo(
+        proatividade, intervalo_min=settings.proactive_interval_min
+    )
+    app.state.pulso = None
     app.state.degradacoes = degradacoes_ref
     app.state.agendador = agendador
     app.state.voz = voz
@@ -251,6 +312,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if settings.consolidator_enabled:
         app.state.sono = asyncio.create_task(agendador.run_forever(), name="consolidador")
+
+    if settings.proactive_enabled:
+        app.state.pulso = asyncio.create_task(
+            app.state.agendador_proativo.run_forever(), name="proatividade"
+        )
 
     if settings.voice_enabled:
         app.state.escuta = await _ligar_microfone(settings, voz)
@@ -320,6 +386,23 @@ async def _montar_ferramentas(
     # politica de EXTERNO. O refresh() abaixo a remove do schema quando nao ha
     # OpenCV - o que e sempre o caso no container, que nao tem camera.
     registro.register(OlharTool(settings))
+    # Canal de aviso, separado do WhatsApp de proposito: se a conta nao
+    # oficial do WhatsApp cair, os avisos continuam chegando por aqui.
+    registro.register(TelegramEnviarTool(settings))
+    # Instagram e so LEITURA: le perfil, metricas e comentarios. A API
+    # oficial nao tem lista de seguidores nem follow/unfollow - ver
+    # docs/INSTAGRAM.md antes de prometer isso ao usuario.
+    registro.register(InstagramResumoTool(settings, store))
+    registro.register(InstagramComentariosTool(settings, store))
+    # WhatsApp nao oficial: so local, so numero secundario, e o
+    # refresh() abaixo o remove do schema em qualquer plataforma
+    # hospedada - checagem que nao pergunta nada a configuracao.
+    registro.register(WhatsAppEnviarTool(settings))
+    # F8. pc_listar e LEITURA e pc_abrir e EXTERNO de proposito: o
+    # contrato entre as duas e id-nunca-caminho, e e ele que impede
+    # uma instrucao injetada de escolher o que abrir.
+    registro.register(PcListarTool(settings))
+    registro.register(PcAbrirTool(settings))
     await registro.refresh()
     log.info("ferramentas.montadas", quantidade=len(registro.schemas()))
     return registro
@@ -568,7 +651,7 @@ async def falar_por_texto(corpo: FalarRequest, voz: VozDep) -> TurnoResponse:
 
 
 @app.post("/chat", tags=["chat"])
-async def chat(corpo: ChatRequest, voz: VozDep) -> ChatResponse:
+async def chat(corpo: ChatRequest, voz: VozDep, request: Request) -> ChatResponse:
     """Conversa por texto, para cliente que fala do proprio lado.
 
     Mesmo pipeline de ``/voz/texto`` - roteador, memoria, ferramentas -, com
@@ -581,7 +664,10 @@ async def chat(corpo: ChatRequest, voz: VozDep) -> ChatResponse:
     - **Resposta enxuta.** O ``TurnoResponse`` carrega latencia por etapa e
       camada de roteamento, que e material de diagnostico, nao de interface.
     """
-    turno = await voz.handle_text(corpo.mensagem, source=corpo.source, falar=False)
+    # A origem e carimbada AQUI, antes do turno rodar: a pendencia nasce la
+    # dentro, e depois de criada nao ha mais como saber de onde ela veio.
+    with origem(_dispositivo_do_header(request)):
+        turno = await voz.handle_text(corpo.mensagem, source=corpo.source, falar=False)
     return ChatResponse(
         output=turno.resposta,
         turn_id=turno.turn_id,
@@ -689,21 +775,192 @@ async def diagnostico_optmus_web(request: Request) -> dict[str, Any]:
     return await tool.client.diagnostico()  # type: ignore[attr-defined]
 
 
+def _dispositivo_do_header(request: Request) -> str:
+    """Quem esta falando, segundo o proprio.
+
+    Nao verificado, e nao precisa ser: aqui isto so CARIMBA a pendencia. Quem
+    mentir no header carimba a pendencia com um dono que nao e ele - e ai nao
+    consegue confirmar, porque na confirmacao a prova e conferida de verdade.
+    """
+    return request.headers.get("X-Optmus-Dispositivo") or ORIGEM_DESCONHECIDA
+
+
+async def _verificar_dispositivo(
+    request: Request, acao: str, token: str, corpo: DecisaoRequest
+) -> None:
+    """Traduz falha de identidade em HTTP, sem dizer qual das duas falhou.
+
+    Dispositivo inexistente e prova errada devolvem a MESMA resposta: separar
+    os dois entregaria um oraculo para descobrir quais ids existem.
+    """
+    registro: RegistroDeDispositivos = request.app.state.dispositivos
+    try:
+        await registro.verificar(corpo.dispositivo, acao, token, corpo.prova)
+    except (DispositivoDesconhecido, ProvaInvalida) as exc:
+        log.warning("seguranca.dispositivo_recusado", acao=acao, erro=str(exc))
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "dispositivo nao reconhecido ou prova invalida",
+        ) from exc
+
+
+@app.post("/seguranca/dispositivos", tags=["seguranca"], status_code=status.HTTP_201_CREATED)
+async def registrar_dispositivo(
+    corpo: RegistrarDispositivoRequest, request: Request
+) -> dict[str, Any]:
+    """Confio-no-primeiro-uso: o primeiro a apresentar um id fica dono dele.
+
+    E a unica vez que o segredo trafega. Dai em diante o dispositivo prova quem
+    e por HMAC, e o segredo nunca mais sai da maquina dele.
+
+    Reapresentar um id existente com OUTRO segredo devolve 409. Essa recusa e o
+    que sustenta o mecanismo inteiro: sem ela, quem tivesse o token da API
+    sequestraria o id do seu HUD so registrando-o de novo.
+    """
+    registro: RegistroDeDispositivos = request.app.state.dispositivos
+    try:
+        return await registro.registrar(corpo.dispositivo, corpo.segredo)
+    except IdJaRegistrado as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@app.get("/seguranca/dispositivos", tags=["seguranca"])
+async def listar_dispositivos(request: Request) -> list[dict[str, Any]]:
+    """Quais aparelhos podem autorizar acao neste Core. Sem os segredos."""
+    registro: RegistroDeDispositivos = request.app.state.dispositivos
+    return await registro.listar()
+
+
+@app.delete("/seguranca/dispositivos/{dispositivo}", tags=["seguranca"])
+async def esquecer_dispositivo(dispositivo: str, request: Request) -> dict[str, Any]:
+    """Revoga um aparelho - navegador perdido, maquina que nao e mais sua."""
+    registro: RegistroDeDispositivos = request.app.state.dispositivos
+    if not await registro.esquecer(dispositivo):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "dispositivo desconhecido")
+    return {"esquecido": dispositivo}
+
+
+class AbrirRequest(BaseModel):
+    alvo_id: str = Field(min_length=4, max_length=64)
+
+
+@app.get("/pc/alvos", tags=["pc"])
+async def pc_alvos(
+    request: Request, pasta_id: Annotated[str | None, Query(max_length=64)] = None
+) -> dict[str, Any]:
+    """O que o HUD pode desenhar como alvo apontavel.
+
+    Passa pelo registro de ferramentas, e nao direto pelo modulo: assim a
+    listagem obedece as mesmas portas do resto (plataforma hospedada,
+    OPTMUS_PC_ENABLED, registro vazio) sem duplicar nenhuma delas.
+    """
+    registro: ToolRegistry = request.app.state.ferramentas
+    resultado = await registro.execute(
+        "pc_listar", {"pasta_id": pasta_id} if pasta_id else {}, comando_origem="hud"
+    )
+    if resultado.is_error:
+        raise HTTPException(status.HTTP_409_CONFLICT, resultado.content)
+    return {"itens": (resultado.dados or {}).get("itens", [])}
+
+
+@app.post("/pc/abrir", tags=["pc"])
+async def pc_abrir(corpo: AbrirRequest, request: Request) -> dict[str, Any]:
+    """Um gesto pediu para abrir algo. Nao abre: **cria a pendencia**.
+
+    O gesto e acao HUMANA, nao do modelo - por isso nao passa pelo `/chat`.
+    Rotear pelo modelo o obrigaria a adivinhar qual id a mao apontou, o que e
+    exatamente o tipo de palpite que este projeto evita.
+
+    Mas ser humano nao dispensa o portao: o que volta daqui e o token de
+    confirmacao, e quem abre de verdade continua sendo
+    `POST /seguranca/confirmar`, com a prova do dispositivo.
+    """
+    registro: ToolRegistry = request.app.state.ferramentas
+    with origem(_dispositivo_do_header(request)):
+        resultado = await registro.execute(
+            "pc_abrir", {"alvo_id": corpo.alvo_id}, comando_origem="gesto"
+        )
+
+    token = resultado.metadata.get("token")
+    if token is None:
+        # Sem token: a politica barrou (teto por hora) ou a ferramenta recusou
+        # o alvo. Nos dois casos nao ha o que confirmar.
+        raise HTTPException(status.HTTP_409_CONFLICT, resultado.content)
+    return {"token": token, "risco": resultado.metadata.get("risco")}
+
+
 @app.get("/seguranca/pendentes", tags=["seguranca"])
 async def acoes_pendentes(request: Request) -> list[dict[str, Any]]:
-    """Acoes de risco esperando confirmacao humana."""
+    """Acoes de risco esperando confirmacao humana.
+
+    Filtrado pelo ``X-Optmus-Dispositivo`` quando ele vem: mostrar a um aparelho
+    um cartao que ele nao consegue autorizar so produz clique com erro. Sem o
+    header devolve tudo - e a visao de script e diagnostico, e listar nao e a
+    fronteira de seguranca aqui; confirmar e.
+    """
     registro: ToolRegistry = request.app.state.ferramentas
-    return registro.policy.pendentes()
+    quem = request.headers.get("X-Optmus-Dispositivo")
+    return registro.policy.pendentes(para=quem)
 
 
 @app.post("/seguranca/confirmar", tags=["seguranca"])
 async def confirmar_acao(corpo: ConfirmarRequest, request: Request) -> dict[str, Any]:
-    """Libera uma acao que a politica reteve. A confirmacao e humana, nao do LLM."""
+    """Libera uma acao que a politica reteve. A confirmacao e humana, nao do LLM.
+
+    Duas perguntas, em ordem, e **nesta** ordem: primeiro "voce e quem diz ser"
+    (prova HMAC contra o segredo do dispositivo), depois "voce pode confirmar
+    ISTO" (a pendencia foi pedida por voce). Inverter deixaria a politica
+    decidindo com base numa identidade nao verificada.
+    """
+    await _verificar_dispositivo(request, "confirmar", corpo.token, corpo)
     registro: ToolRegistry = request.app.state.ferramentas
     resultado = await registro.executar_confirmado(
-        corpo.token, frase=corpo.frase_codigo, comando_origem="api"
+        corpo.token,
+        frase=corpo.frase_codigo,
+        comando_origem=corpo.dispositivo,
+        dispositivo=corpo.dispositivo,
     )
-    return {"executado": not resultado.is_error, "resultado": resultado.content}
+
+    # O resultado volta para o AGENTE, e nao so para esta resposta HTTP.
+    #
+    # Ate 25/08/2026 ele parava aqui: a ferramenta rodava, o texto voltava para
+    # quem clicou, e o modelo nunca ficava sabendo. Com a camera isso era
+    # literal - ela capturava, a foto ia no campo `imagens`, e ninguem olhava.
+    #
+    # Sincrono de proposito: a resposta do agente sai nesta mesma requisicao,
+    # entao quem confirmou le o desfecho no lugar onde clicou. O frontend ja
+    # espera ate 60 s neste caminho.
+    comentario = None
+    if not resultado.ferramenta:
+        # Politica recusou (token vencido, frase errada): nao houve execucao,
+        # entao nao ha desfecho para comentar.
+        pass
+    else:
+        voz: VoiceLoop | None = getattr(request.app.state, "voz", None)
+        if voz is not None:
+            try:
+                turno = await voz.retomar_apos_confirmacao(
+                    ferramenta=resultado.ferramenta,
+                    resumo=resultado.resumo,
+                    resultado=resultado.content,
+                    erro=resultado.is_error,
+                    imagens=resultado.imagens,
+                    origem=resultado.origem,
+                    correlation_id=resultado.correlation_id,
+                )
+                comentario = turno.resposta
+            except Exception as exc:
+                # A acao JA aconteceu. Falhar em comentar nao pode transformar
+                # uma execucao bem-sucedida em erro para quem confirmou.
+                log.error("seguranca.retomada_falhou", erro=str(exc), exc_info=True)
+
+    return {
+        "executado": not resultado.is_error,
+        "resultado": resultado.content,
+        "comentario": comentario,
+    }
 
 
 @app.post("/seguranca/recusar", tags=["seguranca"])
@@ -716,9 +973,15 @@ async def recusar_acao(corpo: RecusarRequest, request: Request) -> dict[str, Any
     guardava as autorizacoes e nao as negativas, que sao o registro mais
     importante quando alguem pergunta "por que isso nao aconteceu?".
     """
+    await _verificar_dispositivo(request, "recusar", corpo.token, corpo)
     registro: ToolRegistry = request.app.state.ferramentas
     pendente = next(
-        (p for p in registro.policy.pendentes() if p["token"] == corpo.token), None
+        (
+            p
+            for p in registro.policy.pendentes(para=corpo.dispositivo)
+            if p["token"] == corpo.token
+        ),
+        None,
     )
     if pendente is None:
         raise HTTPException(
@@ -734,8 +997,8 @@ async def recusar_acao(corpo: RecusarRequest, request: Request) -> dict[str, Any
         # "cancelado" (o humano viu e nao quis). Inventar um terceiro termo
         # quebraria o CHECK do esquema e, pior, apagaria essa distincao.
         decisao="cancelado",
-        parametros={"resumo": pendente["resumo"]},
-        comando_origem="api",
+        parametros={"resumo": pendente["resumo"], "_origem": pendente["origem"]},
+        comando_origem=corpo.dispositivo,
         resultado="recusado pelo humano na tela de confirmacao",
     )
     log.info("politica.recusada", ferramenta=pendente["ferramenta"], token=corpo.token)

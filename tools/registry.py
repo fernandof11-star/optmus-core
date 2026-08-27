@@ -53,6 +53,24 @@ class ToolResult:
         return cls(content=mensagem, is_error=True, metadata=metadata)
 
 
+@dataclass(slots=True)
+class ResultadoConfirmado(ToolResult):
+    """O que uma acao confirmada produziu, **mais** de quem era a pendencia.
+
+    Subclasse de ``ToolResult`` de proposito: quem so quer o texto continua
+    lendo ``.content`` sem saber que isto existe. Os campos extras servem a um
+    unico chamador - o que devolve o resultado ao agente - e ele precisa saber
+    tres coisas que so a pendencia sabia: qual ferramenta rodou, de onde o
+    pedido veio (para decidir se a resposta e falada) e a qual conversa ele
+    pertence.
+    """
+
+    ferramenta: str = ""
+    origem: str = ""
+    resumo: str = ""
+    correlation_id: str | None = None
+
+
 class Tool(ABC):
     """Uma capacidade do Optmus.
 
@@ -216,14 +234,24 @@ class ToolRegistry:
         )
 
     async def executar_confirmado(
-        self, token: str, *, frase: str | None = None, comando_origem: str | None = None
-    ) -> ToolResult:
-        """Executa uma acao que estava pendente de confirmacao humana."""
+        self,
+        token: str,
+        *,
+        frase: str | None = None,
+        comando_origem: str | None = None,
+        dispositivo: str | None = None,
+    ) -> ResultadoConfirmado:
+        """Executa uma acao que estava pendente de confirmacao humana.
+
+        ``dispositivo`` e a identidade JA VERIFICADA de quem confirma - a prova
+        criptografica foi conferida antes, na borda HTTP. Aqui ele serve para a
+        politica decidir se esse dispositivo tem direito a ESTA pendencia.
+        """
         try:
-            pendente = self._policy.confirmar(token, frase=frase)
+            pendente = self._policy.confirmar(token, frase=frase, dispositivo=dispositivo)
         except PermissionError as exc:
             log.warning("politica.confirmacao_recusada", token=token, motivo=str(exc))
-            return ToolResult.erro(str(exc))
+            return ResultadoConfirmado(content=str(exc), is_error=True)
 
         tool = self._tools[pendente.ferramenta]
         if pendente.risco is RiskLevel.DESTRUTIVO and self._policy.delay_destrutivo_s:
@@ -234,16 +262,30 @@ class ToolRegistry:
             ferramenta=tool.name,
             risco=tool.risk,
             decisao="confirmado",
-            parametros=pendente.parametros,
+            # Quem pediu E quem autorizou, os dois na mesma linha: "confirmado"
+            # sem dizer por qual dispositivo e o registro que nao responde a
+            # pergunta que se faz depois de um incidente.
+            parametros={**pendente.parametros, "_origem": pendente.origem},
             correlation_id=pendente.correlation_id,
-            comando_origem=comando_origem,
+            comando_origem=comando_origem or dispositivo,
         )
-        return await self._executar_de_fato(
+        resultado = await self._executar_de_fato(
             tool,
             pendente.parametros,
             correlation_id=pendente.correlation_id,
             comando_origem=comando_origem,
             ja_auditado=True,
+        )
+        return ResultadoConfirmado(
+            content=resultado.content,
+            is_error=resultado.is_error,
+            dados=resultado.dados,
+            metadata=resultado.metadata,
+            imagens=resultado.imagens,
+            ferramenta=tool.name,
+            origem=pendente.origem,
+            resumo=pendente.resumo,
+            correlation_id=pendente.correlation_id,
         )
 
     async def _executar_de_fato(

@@ -229,6 +229,23 @@ class Settings(BaseSettings):
     notion_alert_past_days: int | None = Field(default=None, ge=0, le=3650)
 
     # ----------------------------------------------------------- integracoes
+    telegram_bot_token: SecretStr | None = None
+    # Destino UNICO das mensagens, e de proposito.
+    #
+    # Se o chat fosse parametro da ferramenta, uma instrucao vinda de conteudo
+    # que o Optmus le - um e-mail, uma pagina, uma linha do Notion - poderia
+    # redirecionar mensagens para terceiros. Com o destino na configuracao,
+    # esse ataque deixa de existir: o modelo escolhe o texto, nunca para quem.
+    telegram_chat_id: str | None = None
+
+    # WhatsApp NAO OFICIAL (neonize/whatsmeow). Local e numero secundario -
+    # ver docs/WHATSAPP.md. O caminho oficial (Business API) foi descartado:
+    # janela de 24 h e templates aprovados pela Meta, sem as palavras do Optmus.
+    whatsapp_enabled: bool = False
+    whatsapp_session_path: Path = Path("data/whatsapp.db")
+    # Apelido -> numero. Fora do controle de versao: numeros de gente real.
+    whatsapp_contacts_path: Path = Path("data/contatos.json")
+
     whatsapp_token: SecretStr | None = None
     whatsapp_phone_number_id: str | None = None
     instagram_token: SecretStr | None = None
@@ -243,7 +260,45 @@ class Settings(BaseSettings):
     destructive_passphrase: SecretStr | None = None
     destructive_delay_s: float = Field(default=5.0, ge=0)
     tool_sandbox_runs: int = Field(default=3, ge=0)
+    # ------------------------------------------------------------- F10
+    # Modo desenvolvedor. Desligado por padrao e so local.
+    dev_enabled: bool = False
+    dev_projects_path: Path = Path("data/projetos.json")
+    # Teto de arquivos apagados num commit. Acima disso o commit e recusado -
+    # freio estrutural contra "apaga tudo", que nao depende de o codigo gerado
+    # ser bom.
+    dev_max_delecoes: int = Field(default=8, ge=0)
+    # Ferramentas EXTERNAS cuja confirmacao humana foi DISPENSADA por decisao
+    # explicita do usuario (26/08/2026: "eu controlo a frequencia, nao existe
+    # trava tecnica no caminho de deploy").
+    #
+    # Mora aqui, e nao num atributo da ferramenta, para a dispensa ser UMA
+    # lista visivel em vez de uma flag espalhada. Ha teste garantindo que
+    # camera, WhatsApp, Telegram e Instagram nunca entram nela.
+    dev_sem_portao: tuple[str, ...] = ("dev_publicar",)
+
+    # -------------------------------------------------------------- F8
+    # Abrir arquivo e app de verdade. Desligado por padrao, e so local:
+    # `tools/impl/pc.py` recusa em plataforma hospedada sem consultar isto.
+    pc_enabled: bool = False
+    # Apps e pastas registrados a mao. Fora do controle de versao - sao
+    # caminhos da sua maquina. Formato em docs/HUD_GESTUAL.md.
+    pc_targets_path: Path = Path("data/alvos.json")
+
+    # -------------------------------------------------------------- F7
+    # Desligada por padrao. Proatividade e a unica funcao do Optmus que fala
+    # sem ser chamada; ligar sozinha seria decidir por quem instalou.
+    proactive_enabled: bool = False
+    # Teto rigido de avisos por dia civil. Zero desliga tao bem quanto a flag.
     proactive_daily_budget: int = Field(default=5, ge=0)
+    proactive_interval_min: int = Field(default=30, ge=1)
+    # Janela de silencio [inicio, fim). Aviso que venceria aqui e DESCARTADO,
+    # nao adiado - ver o modulo: a fonte e relida a cada ciclo, entao o que
+    # ainda importar de manha aparece sozinho.
+    proactive_quiet_start: int = Field(default=22, ge=0, le=23)
+    proactive_quiet_end: int = Field(default=8, ge=0, le=23)
+    # Mesmo assunto nao se repete dentro disso.
+    proactive_cooldown_h: int = Field(default=12, ge=1)
 
     # -------------------------------------------------------------- validacao
     @field_validator("*", mode="before")

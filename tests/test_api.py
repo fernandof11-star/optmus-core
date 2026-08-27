@@ -122,6 +122,30 @@ async def test_gatilho_sem_escuta_recusa_em_vez_de_aceitar_calado(
 
 
 # ------------------------------------------- recusa de acao pendente (F6.3)
+DISPOSITIVO = "teste-hud"
+SEGREDO = "s" * 44
+
+
+async def _registrar(client: AsyncClient) -> None:
+    await client.post(
+        "/seguranca/dispositivos",
+        json={"dispositivo": DISPOSITIVO, "segredo": SEGREDO},
+    )
+
+
+def _decisao(token: str, acao: str = "recusar", **extra) -> dict:
+    """Corpo assinado. Confirmar e recusar exigem prova desde o vinculo de
+    dispositivo - sem ela, qualquer um com o token da API decidia por voce."""
+    from security.dispositivos import prova
+
+    return {
+        "token": token,
+        "dispositivo": DISPOSITIVO,
+        "prova": prova(SEGREDO, acao, token),
+        **extra,
+    }
+
+
 async def _criar_pendente(client: AsyncClient) -> dict:
     """Cria uma pendencia de verdade pelo caminho da politica."""
     from security.policy import RiskLevel
@@ -134,6 +158,7 @@ async def _criar_pendente(client: AsyncClient) -> dict:
         resumo="ligar a webcam e olhar o ambiente",
     )
     assert decisao.exige_confirmacao
+    await _registrar(client)
     pendentes = (await client.get("/seguranca/pendentes")).json()
     return next(p for p in pendentes if p["token"] == decisao.token)
 
@@ -143,7 +168,7 @@ async def test_recusar_remove_a_pendencia(client: AsyncClient) -> None:
     a pendencia ficava viva na tela depois de a pessoa ja ter decidido."""
     pendente = await _criar_pendente(client)
 
-    resposta = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+    resposta = await client.post("/seguranca/recusar", json=_decisao(pendente["token"]))
     assert resposta.status_code == 200
     assert resposta.json()["recusado"] is True
 
@@ -155,7 +180,7 @@ async def test_recusa_fica_na_trilha_de_auditoria(client: AsyncClient) -> None:
     """A negativa e o registro que mais falta quando alguem pergunta depois
     por que algo NAO aconteceu. Sem auditar, a trilha guarda so os "sim"."""
     pendente = await _criar_pendente(client)
-    await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+    await client.post("/seguranca/recusar", json=_decisao(pendente["token"]))
 
     trilha = (await client.get("/seguranca/auditoria")).json()
     # "cancelado" e o termo do esquema para "o humano viu e nao quis" -
@@ -168,7 +193,10 @@ async def test_recusa_fica_na_trilha_de_auditoria(client: AsyncClient) -> None:
 async def test_recusar_token_desconhecido_e_404(client: AsyncClient) -> None:
     """Token inventado nao pode responder 200: quem chamou precisa saber que
     a acao que ele achava estar recusando ja nao existia."""
-    resposta = await client.post("/seguranca/recusar", json={"token": "inexistente-1234"})
+    await _registrar(client)
+    resposta = await client.post(
+        "/seguranca/recusar", json=_decisao("inexistente-1234")
+    )
     assert resposta.status_code == 404
 
 
@@ -177,8 +205,9 @@ async def test_recusar_duas_vezes_o_mesmo_token_da_404(client: AsyncClient) -> N
     chegou tarde, em vez de achar que recusou de novo."""
     pendente = await _criar_pendente(client)
 
-    primeira = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
-    segunda = await client.post("/seguranca/recusar", json={"token": pendente["token"]})
+    corpo = _decisao(pendente["token"])
+    primeira = await client.post("/seguranca/recusar", json=corpo)
+    segunda = await client.post("/seguranca/recusar", json=corpo)
 
     assert primeira.status_code == 200
     assert segunda.status_code == 404

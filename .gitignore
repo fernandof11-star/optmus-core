@@ -9,6 +9,13 @@ tokens/
 
 # --- dados locais ---
 data/
+# Redundante com data/, e de proposito. Os dois guardam o mesmo tipo de coisa
+# que o notion_map.json guardava quando quase foi commitado: a sessao da conta
+# de WhatsApp (quem a tiver, e voce) e numeros de telefone de gente real.
+data/whatsapp.db
+data/contatos.json
+# Caminhos da sua maquina.
+data/alvos.json
 *.db
 *.db-wal
 *.db-shm

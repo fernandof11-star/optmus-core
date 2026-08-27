@@ -27,6 +27,7 @@ dependencies = [
 # Cerebro. Leve, sem binario nativo.
 llm = ["anthropic>=0.69"]
 # Embeddings semanticos locais (ONNX, CPU). Sem isto a memoria e lexical.
+whatsapp = ["neonize>=0.4.3"]
 memoria = ["fastembed>=0.4"]
 # Hardware de audio e modelos locais. Pesado e sensivel a versao de Python:
 # faster-whisper, openwakeword e mediapipe param no 3.12.
